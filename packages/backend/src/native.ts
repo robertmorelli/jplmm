@@ -40,6 +40,7 @@ type NativeContext = {
   publicName: string;
   aitken: AitkenImplementation | null;
   structs: Map<string, IRStructDef>;
+  functionSymbols: Map<string, string>;
 };
 
 type NativeFunctionSet = {
@@ -47,12 +48,48 @@ type NativeFunctionSet = {
   definitions: string[];
 };
 
+type NativeModuleContext = {
+  structs: Map<string, IRStructDef>;
+  functionSymbols: Map<string, string>;
+};
+
 const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
 
-export function emitNativeCModule(program: IRProgram, options: EmitNativeCOptions = {}): string {
+function createNativeModuleContext(program: IRProgram): NativeModuleContext {
   const structs = new Map(program.structs.map((struct) => [struct.name, struct] as const));
-  const functionSets = program.functions.map((fn) => emitNativeFunctionSet(fn, options, structs));
+  const functionSymbols = new Map<string, string>();
+  const used = new Set<string>(["main"]);
+
+  for (const fn of program.functions) {
+    const base = `jplmm_fn_${sanitizeCIdentifier(fn.name)}`;
+    let symbol = base;
+    let suffix = 2;
+    while (used.has(symbol)) {
+      symbol = `${base}_${suffix}`;
+      suffix += 1;
+    }
+    used.add(symbol);
+    functionSymbols.set(fn.name, symbol);
+  }
+
+  return {
+    structs,
+    functionSymbols,
+  };
+}
+
+function getFunctionSymbol(functionSymbols: Map<string, string>, name: string): string {
+  return functionSymbols.get(name) ?? name;
+}
+
+function sanitizeCIdentifier(name: string): string {
+  return name.replace(/[^A-Za-z0-9_]/g, "_");
+}
+
+export function emitNativeCModule(program: IRProgram, options: EmitNativeCOptions = {}): string {
+  const module = createNativeModuleContext(program);
+  const functionSets = program.functions.map((fn) => emitNativeFunctionSet(fn, options, module));
   const prototypes = functionSets.flatMap((set) => set.prototypes.map((item) => `${item};`)).join("\n");
   const definitions = functionSets.flatMap((set) => set.definitions).join("\n\n");
 
@@ -65,7 +102,7 @@ export function emitNativeCModule(program: IRProgram, options: EmitNativeCOption
 
 ${emitNativeHelpers()}
 
-${emitNativeTypeHelpers(program, structs)}
+${emitNativeTypeHelpers(program, module.structs)}
 
 ${prototypes}
 
@@ -78,10 +115,12 @@ export function emitNativeRunnerSource(
   fnName: string,
   options: EmitNativeCOptions = {},
 ): string {
+  const module = createNativeModuleContext(program);
   const fn = program.functions.find((item) => item.name === fnName);
   if (!fn) {
     throw new Error(`Unknown IR function '${fnName}'`);
   }
+  const symbolName = getFunctionSymbol(module.functionSymbols, fnName);
 
   const callArgs = fn.params.map((param, idx) => parseArg(param.type, idx + 2)).join(", ");
   const resultDecl = `${cType(fn.retType)} result = ${cDefaultValue(fn.retType)};`;
@@ -96,7 +135,7 @@ int main(int argc, char **argv) {
   ${resultDecl}
   for (long i = 0; i < iterations; i += 1) {
     jplmm_reset_heap();
-    result = ${fnName}(${callArgs});
+    result = ${symbolName}(${callArgs});
   }
   ${printExpr}
   return 0;
@@ -184,30 +223,33 @@ export function runNativeFunction(
 function emitNativeFunctionSet(
   fn: IRFunction,
   options: EmitNativeCOptions,
-  structs: Map<string, IRStructDef>,
+  module: NativeModuleContext,
 ): NativeFunctionSet {
+  const publicName = getFunctionSymbol(module.functionSymbols, fn.name);
   const implementation = options.artifacts?.implementations.get(fn.name);
   if (implementation?.tag === "closed_form_linear_countdown") {
-    return emitClosedFormFunction(fn, implementation);
+    return emitClosedFormFunction(fn, implementation, publicName);
   }
   if (implementation?.tag === "lut") {
-    return emitLutFunctionSet(fn, implementation, options, structs);
+    return emitLutFunctionSet(fn, implementation, options, module, publicName);
   }
   if (implementation?.tag === "linear_speculation") {
-    return emitLinearSpeculationFunctionSet(fn, implementation, options, structs);
+    return emitLinearSpeculationFunctionSet(fn, implementation, options, module, publicName);
   }
   return emitPlainFunctionSet(
     fn,
     options,
-    fn.name,
+    publicName,
+    publicName,
     implementation?.tag === "aitken_scalar_tail" ? implementation : null,
-    structs,
+    module,
   );
 }
 
 function emitClosedFormFunction(
   fn: IRFunction,
   implementation: ClosedFormImplementation,
+  cName: string,
 ): NativeFunctionSet {
   const param = fn.params[implementation.paramIndex];
   if (!param) {
@@ -219,9 +261,9 @@ function emitClosedFormFunction(
       : `(${param.name} <= 0 ? 1 : ((jplmm_sat_add_i32(${param.name}, ${implementation.decrement - 1}) / ${implementation.decrement}) + 1))`;
 
   return {
-    prototypes: [emitPrototype(fn, fn.name)],
+    prototypes: [emitPrototype(fn, cName)],
     definitions: [
-      `${emitPrototype(fn, fn.name)} {
+      `${emitPrototype(fn, cName)} {
   int32_t jplmm_steps = ${stepsExpr};
   return jplmm_sat_add_i32(${implementation.baseValue}, jplmm_sat_mul_i32(${implementation.stepValue}, jplmm_steps));
 }`,
@@ -233,11 +275,12 @@ function emitLutFunctionSet(
   fn: IRFunction,
   implementation: LutImplementation,
   options: EmitNativeCOptions,
-  structs: Map<string, IRStructDef>,
+  module: NativeModuleContext,
+  publicName: string,
 ): NativeFunctionSet {
-  const genericName = `${fn.name}__generic`;
-  const tableName = `${fn.name}__lut`;
-  const generic = emitPlainFunctionSet(fn, options, genericName, null, structs);
+  const genericName = `${publicName}__generic`;
+  const tableName = `${publicName}__lut`;
+  const generic = emitPlainFunctionSet(fn, options, genericName, publicName, null, module);
   const tableType = cType(implementation.resultType);
   const tableValues = implementation.table
     .map((value) =>
@@ -246,11 +289,11 @@ function emitLutFunctionSet(
     .join(", ");
 
   return {
-    prototypes: [...generic.prototypes, emitPrototype(fn, fn.name)],
+    prototypes: [...generic.prototypes, emitPrototype(fn, publicName)],
     definitions: [
       `static const ${tableType} ${tableName}[${implementation.table.length}] = { ${tableValues} };`,
       ...generic.definitions,
-      `${emitPrototype(fn, fn.name)} {
+      `${emitPrototype(fn, publicName)} {
 ${indent(emitLutWrapperBody(fn, implementation, genericName, tableName), 1)}
 }`,
     ],
@@ -261,20 +304,21 @@ function emitLinearSpeculationFunctionSet(
   fn: IRFunction,
   implementation: LinearSpeculationImplementation,
   options: EmitNativeCOptions,
-  structs: Map<string, IRStructDef>,
+  module: NativeModuleContext,
+  publicName: string,
 ): NativeFunctionSet {
-  const genericName = `${fn.name}__generic`;
-  const generic = emitPlainFunctionSet(fn, options, genericName, null, structs);
+  const genericName = `${publicName}__generic`;
+  const generic = emitPlainFunctionSet(fn, options, genericName, publicName, null, module);
   const varying = fn.params[implementation.varyingParamIndex];
   if (!varying) {
     throw new Error(`Linear speculation lowering failed for '${fn.name}'`);
   }
 
   return {
-    prototypes: [...generic.prototypes, emitPrototype(fn, fn.name)],
+    prototypes: [...generic.prototypes, emitPrototype(fn, publicName)],
     definitions: [
       ...generic.definitions,
-      `${emitPrototype(fn, fn.name)} {
+      `${emitPrototype(fn, publicName)} {
   ${varying.name} = ${implementation.fixedPoint};
   return ${genericName}(${fn.params.map((param) => param.name).join(", ")});
 }`,
@@ -286,15 +330,17 @@ function emitPlainFunctionSet(
   fn: IRFunction,
   options: EmitNativeCOptions,
   cName: string,
+  publicName: string,
   aitken: AitkenImplementation | null,
-  structs: Map<string, IRStructDef>,
+  module: NativeModuleContext,
 ): NativeFunctionSet {
   const ctx: NativeContext = {
     fn,
     cName,
-    publicName: fn.name,
+    publicName,
     aitken,
-    structs,
+    structs: module.structs,
+    functionSymbols: module.functionSymbols,
   };
   return {
     prototypes: [emitPrototype(fn, cName)],
@@ -402,7 +448,7 @@ function emitExpr(expr: IRExpr, ctx: NativeContext, options: EmitNativeCOptions)
         ? `jplmm_sat_neg_i32(${emitExpr(expr.operand, ctx, options)})`
         : `jplmm_nan_to_zero_f32(-(${emitExpr(expr.operand, ctx, options)}))`;
     case "call":
-      return emitCall(expr.name, expr.args.map((arg) => emitExpr(arg, ctx, options)), expr.resultType);
+      return emitCall(expr.name, expr.args.map((arg) => emitExpr(arg, ctx, options)), expr.resultType, ctx.functionSymbols);
     case "rec":
       return emitNonTailRecExpr(expr, ctx, options);
     case "total_div":
@@ -530,7 +576,7 @@ function emitBinop(op: string, left: string, right: string, resultType: Type): s
   throw new Error(`Unsupported native binop '${op}'`);
 }
 
-function emitCall(name: string, args: string[], resultType: Type): string {
+function emitCall(name: string, args: string[], resultType: Type, functionSymbols: Map<string, string>): string {
   switch (name) {
     case "sqrt":
       return `jplmm_nan_to_zero_f32(sqrtf(${args[0] ?? "0"}))`;
@@ -569,7 +615,7 @@ function emitCall(name: string, args: string[], resultType: Type): string {
     case "to_int":
       return `jplmm_trunc_sat_f32_to_i32(${args[0] ?? "0"})`;
     default:
-      return `${name}(${args.join(", ")})`;
+      return `${getFunctionSymbol(functionSymbols, name)}(${args.join(", ")})`;
   }
 }
 
@@ -966,10 +1012,9 @@ function emitIndexExpr(expr: Extract<IRExpr, { tag: "index" }>, ctx: NativeConte
   lines.push(`   int32_t ${offsetLocal} = 0;`);
   for (let i = 0; i < expr.indices.length; i += 1) {
     const indexLocal = `jplmm_idx_${expr.id}_${i}`;
-    lines.push(`   int32_t ${indexLocal} = ${emitExpr(expr.indices[i]!, ctx, options)};`);
-    lines.push(`   if (${indexLocal} < 0 || ${indexLocal} >= jplmm_array_dim(${baseLocal}, ${i})) {`);
-    lines.push(`     jplmm_panic("array index out of bounds");`);
-    lines.push("   }");
+    lines.push(
+      `   int32_t ${indexLocal} = jplmm_clamp_i32(${emitExpr(expr.indices[i]!, ctx, options)}, 0, jplmm_max_i32(0, jplmm_array_dim(${baseLocal}, ${i}) - 1));`,
+    );
     lines.push(`   ${offsetLocal} += ${indexLocal} * jplmm_array_stride(${baseLocal}, ${i});`);
   }
   if (expr.indices.length === arrayType.dims) {
@@ -1056,13 +1101,10 @@ function emitBindingLoopTree(
   const binding = bindings[index]!;
   const extentLocal = `jplmm_extent_${exprId}_${index}`;
   const lines = [`{`];
-  lines.push(`  int32_t ${extentLocal} = ${emitExpr(binding.expr, ctx, options)};`);
-  lines.push(`  if (${extentLocal} <= 0) {`);
-  lines.push(`    jplmm_panic("sum/array bounds must be positive");`);
-  lines.push("  }");
+  lines.push(`  int32_t ${extentLocal} = jplmm_max_i32(1, ${emitExpr(binding.expr, ctx, options)});`);
   if (dimLocals[index]) {
     lines.push(`  if (${dimLocals[index]} == 0) {`);
-    lines.push(`    ${dimLocals[index]} = ${extentLocal};`);
+      lines.push(`    ${dimLocals[index]} = ${extentLocal};`);
     lines.push(`  } else if (${dimLocals[index]} != ${extentLocal}) {`);
     lines.push(`    jplmm_panic("array body produced ragged dimensions");`);
     lines.push("  }");

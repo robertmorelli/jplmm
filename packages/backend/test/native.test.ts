@@ -8,7 +8,7 @@ import { emitNativeRunnerSource, runNativeFunction } from "../src/native.ts";
 
 function compile(source: string) {
   const frontend = runFrontend(source);
-  expect(frontend.diagnostics).toEqual([]);
+  expect(frontend.diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
   return buildIR(frontend.program, frontend.typeMap);
 }
 
@@ -125,6 +125,24 @@ describe("native arm64 backend", () => {
       expect(run.value).toBe(13);
       expect(run.source).toContain("jplmm_array_alloc_r2");
       expect(run.source).toContain("jplmm_array_slice");
+    } finally {
+      run.cleanup();
+    }
+  });
+
+  it("allows a user-defined main function without colliding with the native runner entry point", () => {
+    const program = compile(`
+      fun main(): int {
+        ret 42;
+      }
+    `);
+    const source = emitNativeRunnerSource(program, "main");
+    const run = runNativeFunction(program, "main", []);
+
+    try {
+      expect(source).toContain("int main(int argc, char **argv)");
+      expect(source).toContain("static int32_t jplmm_fn_main(void)");
+      expect(run.value).toBe(42);
     } finally {
       run.cleanup();
     }

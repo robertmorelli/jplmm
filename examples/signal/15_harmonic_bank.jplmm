@@ -1,35 +1,35 @@
-fn moving3(signal:float[], n:int): float[] {
+fun moving3(signal:float[], n:int): float[] {
   ret array [i:n]
     (signal[clamp(i - 1, 0, n - 1)] + signal[i] + signal[clamp(i + 1, 0, n - 1)]) / 3.0;
 }
 
-fn fir5(signal:float[], n:int): float[] {
+fun fir5(signal:float[], n:int): float[] {
   ret array [i:n]
     (signal[clamp(i - 2, 0, n - 1)] * 5.0 + signal[clamp(i - 1, 0, n - 1)] * 2.0 + signal[i] * 4.0 + signal[clamp(i + 1, 0, n - 1)] * 2.0 + signal[clamp(i + 2, 0, n - 1)] * 5.0) / 18.0;
 }
 
-fn derivative(signal:float[], n:int): float[] {
+fun derivative(signal:float[], n:int): float[] {
   ret array [i:n] (signal[clamp(i + 1, 0, n - 1)] - signal[clamp(i - 1, 0, n - 1)]) / 2.0;
 }
 
-fn modulate(signal:float[], n:int): float[] {
+fun modulate(signal:float[], n:int): float[] {
   ret array [i:n] sin(signal[i]) + cos(signal[i] / 2.0) + derivative(signal, n)[i] / 4.0;
 }
 
-fn prefix(signal:float[], n:int): float[] {
+fun prefix(signal:float[], n:int): float[] {
   ret array [i:n] sum [j:i + 1] signal[j];
 }
 
-fn envelope(signal:float[], n:int): float[] {
+fun envelope(signal:float[], n:int): float[] {
   let shaped = modulate(fir5(moving3(signal, n), n), n);
   ret array [i:n] sqrt(abs(shaped[i] * shaped[i] + prefix(shaped, n)[i] / 17.0));
 }
 
-fn pipeline(signal:float[], n:int): float[] {
+fun pipeline(signal:float[], n:int): float[] {
   ret prefix(envelope(signal, n), n);
 }
 
-fn total_energy(signal:float[], n:int): float {
+fun total_energy(signal:float[], n:int): float {
   let out = pipeline(signal, n);
   ret sum [i:n] out[i] * out[i];
 }

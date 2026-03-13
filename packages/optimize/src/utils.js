@@ -1,5 +1,6 @@
 export function mapProgramExprs(program, visit) {
     return {
+        structs: program.structs,
         globals: program.globals.map((g) => mapGlobal(g, visit)),
         functions: program.functions.map((fn) => mapFunction(fn, visit)),
     };
@@ -124,6 +125,9 @@ export function makeSyntheticIdFactory(program) {
     for (const global of program.globals) {
         maxId = Math.max(maxId, global.id);
         visitExpr(global.expr);
+    }
+    for (const struct of program.structs) {
+        maxId = Math.max(maxId, struct.id);
     }
     for (const fn of program.functions) {
         maxId = Math.max(maxId, fn.id);

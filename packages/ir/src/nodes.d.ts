@@ -1,4 +1,4 @@
-import type { BinOp, GasLimit, NodeId, Param, Type, UnOp } from "@jplmm/ast";
+import type { BinOp, FunctionKeyword, GasLimit, NodeId, Param, StructField, Type, UnOp } from "@jplmm/ast";
 export type IRBinding = {
     name: string;
     expr: IRExpr;
@@ -149,6 +149,7 @@ export type IRStmt = {
 };
 export type IRFunction = {
     name: string;
+    keyword: FunctionKeyword;
     params: Param[];
     retType: Type;
     body: IRStmt[];
@@ -160,7 +161,13 @@ export type IRGlobalLet = {
     expr: IRExpr;
     id: NodeId;
 };
+export type IRStructDef = {
+    name: string;
+    fields: StructField[];
+    id: NodeId;
+};
 export type IRProgram = {
+    structs: IRStructDef[];
     functions: IRFunction[];
     globals: IRGlobalLet[];
 };

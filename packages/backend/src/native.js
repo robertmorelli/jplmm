@@ -3,8 +3,35 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
+function createNativeModuleContext(program) {
+    const structs = new Map(program.structs.map((struct) => [struct.name, struct]));
+    const functionSymbols = new Map();
+    const used = new Set(["main"]);
+    for (const fn of program.functions) {
+        const base = `jplmm_fn_${sanitizeCIdentifier(fn.name)}`;
+        let symbol = base;
+        let suffix = 2;
+        while (used.has(symbol)) {
+            symbol = `${base}_${suffix}`;
+            suffix += 1;
+        }
+        used.add(symbol);
+        functionSymbols.set(fn.name, symbol);
+    }
+    return {
+        structs,
+        functionSymbols,
+    };
+}
+function getFunctionSymbol(functionSymbols, name) {
+    return functionSymbols.get(name) ?? name;
+}
+function sanitizeCIdentifier(name) {
+    return name.replace(/[^A-Za-z0-9_]/g, "_");
+}
 export function emitNativeCModule(program, options = {}) {
-    const functionSets = program.functions.map((fn) => emitNativeFunctionSet(fn, options));
+    const module = createNativeModuleContext(program);
+    const functionSets = program.functions.map((fn) => emitNativeFunctionSet(fn, options, module));
     const prototypes = functionSets.flatMap((set) => set.prototypes.map((item) => `${item};`)).join("\n");
     const definitions = functionSets.flatMap((set) => set.definitions).join("\n\n");
     return `#include <math.h>
@@ -12,8 +39,11 @@ export function emitNativeCModule(program, options = {}) {
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 ${emitNativeHelpers()}
+
+${emitNativeTypeHelpers(program, module.structs)}
 
 ${prototypes}
 
@@ -21,10 +51,12 @@ ${definitions}
 `;
 }
 export function emitNativeRunnerSource(program, fnName, options = {}) {
+    const module = createNativeModuleContext(program);
     const fn = program.functions.find((item) => item.name === fnName);
     if (!fn) {
         throw new Error(`Unknown IR function '${fnName}'`);
     }
+    const symbolName = getFunctionSymbol(module.functionSymbols, fnName);
     const callArgs = fn.params.map((param, idx) => parseArg(param.type, idx + 2)).join(", ");
     const resultDecl = `${cType(fn.retType)} result = ${cDefaultValue(fn.retType)};`;
     const printExpr = fn.retType.tag === "float" ? `printf("%.9g\\n", result);` : `printf("%d\\n", result);`;
@@ -36,7 +68,8 @@ int main(int argc, char **argv) {
   }
   ${resultDecl}
   for (long i = 0; i < iterations; i += 1) {
-    result = ${fnName}(${callArgs});
+    jplmm_reset_heap();
+    result = ${symbolName}(${callArgs});
   }
   ${printExpr}
   return 0;
@@ -103,20 +136,21 @@ export function runNativeFunction(program, fnName, args, options = {}) {
         throw error;
     }
 }
-function emitNativeFunctionSet(fn, options) {
+function emitNativeFunctionSet(fn, options, module) {
+    const publicName = getFunctionSymbol(module.functionSymbols, fn.name);
     const implementation = options.artifacts?.implementations.get(fn.name);
     if (implementation?.tag === "closed_form_linear_countdown") {
-        return emitClosedFormFunction(fn, implementation);
+        return emitClosedFormFunction(fn, implementation, publicName);
     }
     if (implementation?.tag === "lut") {
-        return emitLutFunctionSet(fn, implementation, options);
+        return emitLutFunctionSet(fn, implementation, options, module, publicName);
     }
     if (implementation?.tag === "linear_speculation") {
-        return emitLinearSpeculationFunctionSet(fn, implementation, options);
+        return emitLinearSpeculationFunctionSet(fn, implementation, options, module, publicName);
     }
-    return emitPlainFunctionSet(fn, options, fn.name, implementation?.tag === "aitken_scalar_tail" ? implementation : null);
+    return emitPlainFunctionSet(fn, options, publicName, publicName, implementation?.tag === "aitken_scalar_tail" ? implementation : null, module);
 }
-function emitClosedFormFunction(fn, implementation) {
+function emitClosedFormFunction(fn, implementation, cName) {
     const param = fn.params[implementation.paramIndex];
     if (!param) {
         throw new Error(`Closed-form lowering failed for '${fn.name}'`);
@@ -125,58 +159,60 @@ function emitClosedFormFunction(fn, implementation) {
         ? `(${param.name} <= 0 ? 1 : ${param.name} + 1)`
         : `(${param.name} <= 0 ? 1 : ((jplmm_sat_add_i32(${param.name}, ${implementation.decrement - 1}) / ${implementation.decrement}) + 1))`;
     return {
-        prototypes: [emitPrototype(fn, fn.name)],
+        prototypes: [emitPrototype(fn, cName)],
         definitions: [
-            `${emitPrototype(fn, fn.name)} {
+            `${emitPrototype(fn, cName)} {
   int32_t jplmm_steps = ${stepsExpr};
   return jplmm_sat_add_i32(${implementation.baseValue}, jplmm_sat_mul_i32(${implementation.stepValue}, jplmm_steps));
 }`,
         ],
     };
 }
-function emitLutFunctionSet(fn, implementation, options) {
-    const genericName = `${fn.name}__generic`;
-    const tableName = `${fn.name}__lut`;
-    const generic = emitPlainFunctionSet(fn, options, genericName, null);
+function emitLutFunctionSet(fn, implementation, options, module, publicName) {
+    const genericName = `${publicName}__generic`;
+    const tableName = `${publicName}__lut`;
+    const generic = emitPlainFunctionSet(fn, options, genericName, publicName, null, module);
     const tableType = cType(implementation.resultType);
     const tableValues = implementation.table
         .map((value) => implementation.resultType.tag === "float" ? `${formatFloatLiteral(value)}` : `${value | 0}`)
         .join(", ");
     return {
-        prototypes: [...generic.prototypes, emitPrototype(fn, fn.name)],
+        prototypes: [...generic.prototypes, emitPrototype(fn, publicName)],
         definitions: [
             `static const ${tableType} ${tableName}[${implementation.table.length}] = { ${tableValues} };`,
             ...generic.definitions,
-            `${emitPrototype(fn, fn.name)} {
+            `${emitPrototype(fn, publicName)} {
 ${indent(emitLutWrapperBody(fn, implementation, genericName, tableName), 1)}
 }`,
         ],
     };
 }
-function emitLinearSpeculationFunctionSet(fn, implementation, options) {
-    const genericName = `${fn.name}__generic`;
-    const generic = emitPlainFunctionSet(fn, options, genericName, null);
+function emitLinearSpeculationFunctionSet(fn, implementation, options, module, publicName) {
+    const genericName = `${publicName}__generic`;
+    const generic = emitPlainFunctionSet(fn, options, genericName, publicName, null, module);
     const varying = fn.params[implementation.varyingParamIndex];
     if (!varying) {
         throw new Error(`Linear speculation lowering failed for '${fn.name}'`);
     }
     return {
-        prototypes: [...generic.prototypes, emitPrototype(fn, fn.name)],
+        prototypes: [...generic.prototypes, emitPrototype(fn, publicName)],
         definitions: [
             ...generic.definitions,
-            `${emitPrototype(fn, fn.name)} {
+            `${emitPrototype(fn, publicName)} {
   ${varying.name} = ${implementation.fixedPoint};
   return ${genericName}(${fn.params.map((param) => param.name).join(", ")});
 }`,
         ],
     };
 }
-function emitPlainFunctionSet(fn, options, cName, aitken) {
+function emitPlainFunctionSet(fn, options, cName, publicName, aitken, module) {
     const ctx = {
         fn,
         cName,
-        publicName: fn.name,
+        publicName,
         aitken,
+        structs: module.structs,
+        functionSymbols: module.functionSymbols,
     };
     return {
         prototypes: [emitPrototype(fn, cName)],
@@ -268,7 +304,7 @@ function emitExpr(expr, ctx, options) {
                 ? `jplmm_sat_neg_i32(${emitExpr(expr.operand, ctx, options)})`
                 : `jplmm_nan_to_zero_f32(-(${emitExpr(expr.operand, ctx, options)}))`;
         case "call":
-            return emitCall(expr.name, expr.args.map((arg) => emitExpr(arg, ctx, options)), expr.resultType);
+            return emitCall(expr.name, expr.args.map((arg) => emitExpr(arg, ctx, options)), expr.resultType, ctx.functionSymbols);
         case "rec":
             return emitNonTailRecExpr(expr, ctx, options);
         case "total_div":
@@ -285,13 +321,18 @@ function emitExpr(expr, ctx, options) {
             return `jplmm_sat_mul_i32(${emitExpr(expr.left, ctx, options)}, ${emitExpr(expr.right, ctx, options)})`;
         case "sat_neg":
             return `jplmm_sat_neg_i32(${emitExpr(expr.operand, ctx, options)})`;
-        case "index":
         case "field":
+            return emitFieldExpr(expr, ctx, options);
         case "struct_cons":
+            return emitStructConsExpr(expr, ctx, options);
         case "array_cons":
+            return emitArrayConsExpr(expr, ctx, options);
         case "array_expr":
+            return emitArrayComprehensionExpr(expr, ctx, options);
         case "sum_expr":
-            throw new Error(`Native lowering for '${expr.tag}' is not implemented yet`);
+            return emitSumComprehensionExpr(expr, ctx, options);
+        case "index":
+            return emitIndexExpr(expr, ctx, options);
         default: {
             const _never = expr;
             return _never;
@@ -339,6 +380,12 @@ function emitEquality(left, right, type) {
     if (type.tag === "float") {
         return `jplmm_eq_f32_ulp1(${left}, ${right})`;
     }
+    if (type.tag === "named") {
+        return `${structEqHelperName(type.name)}(${left}, ${right})`;
+    }
+    if (type.tag === "array") {
+        return `${arrayEqHelperName(type)}(${left}, ${right})`;
+    }
     return `${left} == ${right}`;
 }
 function emitBinop(op, left, right, resultType) {
@@ -376,7 +423,7 @@ function emitBinop(op, left, right, resultType) {
     }
     throw new Error(`Unsupported native binop '${op}'`);
 }
-function emitCall(name, args, resultType) {
+function emitCall(name, args, resultType, functionSymbols) {
     switch (name) {
         case "sqrt":
             return `jplmm_nan_to_zero_f32(sqrtf(${args[0] ?? "0"}))`;
@@ -415,7 +462,7 @@ function emitCall(name, args, resultType) {
         case "to_int":
             return `jplmm_trunc_sat_f32_to_i32(${args[0] ?? "0"})`;
         default:
-            return `${name}(${args.join(", ")})`;
+            return `${getFunctionSymbol(functionSymbols, name)}(${args.join(", ")})`;
     }
 }
 function emitLutWrapperBody(fn, implementation, genericName, tableName) {
@@ -570,13 +617,11 @@ function cType(type) {
     if (type.tag === "float") {
         return "float";
     }
-    if (type.tag === "int") {
+    if (type.tag === "int" || type.tag === "void" || type.tag === "array" || type.tag === "named") {
         return "int32_t";
     }
-    if (type.tag === "void") {
-        return "int32_t";
-    }
-    throw new Error(`Native lowering for type '${type.tag}' is not implemented yet`);
+    const _never = type;
+    throw new Error(`Native lowering for an unexpected type is not implemented: ${_never}`);
 }
 function cDefaultValue(type) {
     return type.tag === "float" ? "0.0f" : "0";
@@ -606,6 +651,563 @@ function parseArg(type, argvIndex) {
         return `(argc > ${argvIndex} ? strtof(argv[${argvIndex}], NULL) : 0.0f)`;
     }
     return `(argc > ${argvIndex} ? (int32_t)strtol(argv[${argvIndex}], NULL, 10) : 0)`;
+}
+function emitFieldExpr(expr, ctx, options) {
+    const targetType = expr.target.resultType;
+    if (targetType.tag !== "named") {
+        throw new Error(`Field access requires a struct target in '${ctx.fn.name}'`);
+    }
+    const structDef = ctx.structs.get(targetType.name);
+    if (!structDef) {
+        throw new Error(`Unknown struct '${targetType.name}' in native lowering`);
+    }
+    const fieldIndex = structDef.fields.findIndex((field) => field.name === expr.field);
+    if (fieldIndex < 0) {
+        throw new Error(`Unknown field '${expr.field}' on struct '${targetType.name}'`);
+    }
+    const baseLocal = `jplmm_field_base_${expr.id}`;
+    return `({ int32_t ${baseLocal} = ${emitExpr(expr.target, ctx, options)};
+   if (${baseLocal} == 0) {
+     jplmm_panic("field access on null struct");
+   }
+   ${loadWordExpr(expr.resultType, baseLocal, `${fieldIndex}`)}; })`;
+}
+function emitStructConsExpr(expr, ctx, options) {
+    const structDef = ctx.structs.get(expr.name);
+    if (!structDef) {
+        throw new Error(`Unknown struct '${expr.name}' in native lowering`);
+    }
+    const handleLocal = `jplmm_struct_${expr.id}`;
+    const lines = [`({ int32_t ${handleLocal} = jplmm_alloc_words(${structDef.fields.length});`];
+    for (let i = 0; i < structDef.fields.length; i += 1) {
+        const fieldType = structDef.fields[i].type;
+        const valueExpr = emitExpr(expr.fields[i], ctx, options);
+        lines.push(`   ${storeWordStmt(fieldType, handleLocal, `${i}`, valueExpr)}`);
+    }
+    lines.push(`   ${handleLocal}; })`);
+    return lines.join("\n");
+}
+function emitArrayConsExpr(expr, ctx, options) {
+    const arrayType = expectArrayType(expr.resultType, "array literal");
+    const rank = arrayType.dims;
+    const handleLocal = `jplmm_array_${expr.id}`;
+    const headerWords = 1 + rank;
+    if (expr.elements.length === 0) {
+        return `jplmm_array_alloc_r1(0)`;
+    }
+    if (expr.elements[0].resultType.tag === "array") {
+        const childType = expectArrayType(expr.elements[0].resultType, "nested array literal");
+        const childRank = childType.dims;
+        const childLocals = expr.elements.map((_, idx) => `jplmm_child_${expr.id}_${idx}`);
+        const childCells = `jplmm_child_cells_${expr.id}`;
+        const dimLocals = Array.from({ length: childRank }, (_, idx) => `jplmm_dim_${expr.id}_${idx + 1}`);
+        const allocArgs = [String(expr.elements.length), ...dimLocals].join(", ");
+        const lines = [`({ int32_t ${handleLocal};`];
+        for (let i = 0; i < expr.elements.length; i += 1) {
+            lines.push(`   int32_t ${childLocals[i]} = ${emitExpr(expr.elements[i], ctx, options)};`);
+            lines.push(`   if (${childLocals[i]} == 0) {`);
+            lines.push(`     jplmm_panic("nested array literal produced null child");`);
+            lines.push("   }");
+            lines.push(`   if (jplmm_array_rank(${childLocals[i]}) != ${childRank}) {`);
+            lines.push(`     jplmm_panic("nested array literal rank mismatch");`);
+            lines.push("   }");
+        }
+        for (let i = 0; i < childRank; i += 1) {
+            lines.push(`   int32_t ${dimLocals[i]} = jplmm_array_dim(${childLocals[0]}, ${i});`);
+        }
+        for (let i = 1; i < expr.elements.length; i += 1) {
+            for (let j = 0; j < childRank; j += 1) {
+                lines.push(`   if (jplmm_array_dim(${childLocals[i]}, ${j}) != ${dimLocals[j]}) {`);
+                lines.push(`     jplmm_panic("array literal requires nested arrays with matching dimensions");`);
+                lines.push("   }");
+            }
+        }
+        lines.push(`   int32_t ${childCells} = jplmm_array_total_cells(${childLocals[0]});`);
+        lines.push(`   ${handleLocal} = jplmm_array_alloc_r${rank}(${allocArgs});`);
+        lines.push(`   int32_t jplmm_dst_${expr.id} = 0;`);
+        for (let i = 0; i < expr.elements.length; i += 1) {
+            lines.push(`   jplmm_copy_words(${handleLocal}, ${headerWords} + jplmm_dst_${expr.id}, ${childLocals[i]}, ${1 + childRank}, ${childCells});`);
+            lines.push(`   jplmm_dst_${expr.id} += ${childCells};`);
+        }
+        lines.push(`   ${handleLocal}; })`);
+        return lines.join("\n");
+    }
+    const allocArgs = expr.elements.length === 0 ? "0" : `${expr.elements.length}`;
+    const lines = [`({ int32_t ${handleLocal} = jplmm_array_alloc_r1(${allocArgs});`];
+    for (let i = 0; i < expr.elements.length; i += 1) {
+        lines.push(`   ${storeWordStmt(arrayType.element, handleLocal, `${headerWords + i}`, emitExpr(expr.elements[i], ctx, options))}`);
+    }
+    lines.push(`   ${handleLocal}; })`);
+    return lines.join("\n");
+}
+function emitArrayComprehensionExpr(expr, ctx, options) {
+    const resultType = expectArrayType(expr.resultType, "array comprehension");
+    const prefixRank = expr.bindings.length;
+    const suffixRank = resultType.dims - prefixRank;
+    const handleLocal = `jplmm_array_${expr.id}`;
+    const totalLocal = `jplmm_total_${expr.id}`;
+    const cursorLocal = `jplmm_cursor_${expr.id}`;
+    const bodyCellsLocal = `jplmm_body_cells_${expr.id}`;
+    const dimLocals = Array.from({ length: resultType.dims }, (_, idx) => `jplmm_dim_${expr.id}_${idx}`);
+    const headerWords = 1 + resultType.dims;
+    const prepassBody = emitArrayComprehensionLeaf(expr, ctx, options, {
+        suffixRank,
+        dimLocals,
+        totalLocal,
+        bodyCellsLocal,
+        mode: "prepass",
+        handleLocal,
+        cursorLocal,
+        headerWords,
+    });
+    const fillBody = emitArrayComprehensionLeaf(expr, ctx, options, {
+        suffixRank,
+        dimLocals,
+        totalLocal,
+        bodyCellsLocal,
+        mode: "fill",
+        handleLocal,
+        cursorLocal,
+        headerWords,
+    });
+    const allocArgs = dimLocals.slice(0, resultType.dims).join(", ");
+    const lines = [`({ int32_t ${handleLocal};`];
+    lines.push(`   int32_t ${totalLocal} = 0;`);
+    lines.push(`   int32_t ${bodyCellsLocal} = 0;`);
+    for (const dimLocal of dimLocals) {
+        lines.push(`   int32_t ${dimLocal} = 0;`);
+    }
+    lines.push(indent(emitBindingLoopTree(expr.bindings, ctx, options, expr.id, dimLocals, 0, prepassBody), 1));
+    lines.push(`   ${handleLocal} = jplmm_array_alloc_r${resultType.dims}(${allocArgs});`);
+    lines.push(`   int32_t ${cursorLocal} = 0;`);
+    lines.push(indent(emitBindingLoopTree(expr.bindings, ctx, options, expr.id, dimLocals, 0, fillBody), 1));
+    lines.push(`   ${handleLocal}; })`);
+    return lines.join("\n");
+}
+function emitSumComprehensionExpr(expr, ctx, options) {
+    const sumLocal = `jplmm_sum_${expr.id}`;
+    const lines = [`({ ${cType(expr.resultType)} ${sumLocal} = ${cDefaultValue(expr.resultType)};`];
+    const body = `${sumLocal} = ${emitBinop("+", sumLocal, emitExpr(expr.body, ctx, options), expr.resultType)};`;
+    lines.push(indent(emitBindingLoopTree(expr.bindings, ctx, options, expr.id, [], 0, body), 1));
+    lines.push(`   ${sumLocal}; })`);
+    return lines.join("\n");
+}
+function emitIndexExpr(expr, ctx, options) {
+    const baseLocal = `jplmm_index_base_${expr.id}`;
+    const offsetLocal = `jplmm_offset_${expr.id}`;
+    const arrayType = expectArrayType(expr.array.resultType, "array indexing");
+    const lines = [`({ int32_t ${baseLocal} = ${emitExpr(expr.array, ctx, options)};`];
+    lines.push(`   if (${baseLocal} == 0) {`);
+    lines.push(`     jplmm_panic("indexing null array");`);
+    lines.push("   }");
+    lines.push(`   if (jplmm_array_rank(${baseLocal}) < ${expr.indices.length}) {`);
+    lines.push(`     jplmm_panic("array index rank mismatch");`);
+    lines.push("   }");
+    lines.push(`   int32_t ${offsetLocal} = 0;`);
+    for (let i = 0; i < expr.indices.length; i += 1) {
+        const indexLocal = `jplmm_idx_${expr.id}_${i}`;
+        lines.push(`   int32_t ${indexLocal} = jplmm_clamp_i32(${emitExpr(expr.indices[i], ctx, options)}, 0, jplmm_max_i32(0, jplmm_array_dim(${baseLocal}, ${i}) - 1));`);
+        lines.push(`   ${offsetLocal} += ${indexLocal} * jplmm_array_stride(${baseLocal}, ${i});`);
+    }
+    if (expr.indices.length === arrayType.dims) {
+        lines.push(`   ${loadWordExpr(expr.resultType, baseLocal, `${1 + arrayType.dims} + ${offsetLocal}`)}; })`);
+    }
+    else {
+        lines.push(`   jplmm_array_slice(${baseLocal}, ${expr.indices.length}, ${offsetLocal}); })`);
+    }
+    return lines.join("\n");
+}
+function emitArrayComprehensionLeaf(expr, ctx, options, state) {
+    if (expr.body.resultType.tag === "array") {
+        const bodyLocal = `jplmm_body_${expr.id}_${state.mode}`;
+        const lines = [`int32_t ${bodyLocal} = ${emitExpr(expr.body, ctx, options)};`];
+        lines.push(`if (${bodyLocal} == 0) {`);
+        lines.push(`  jplmm_panic("array comprehension produced null nested array");`);
+        lines.push("}");
+        lines.push(`if (jplmm_array_rank(${bodyLocal}) != ${state.suffixRank}) {`);
+        lines.push(`  jplmm_panic("array comprehension nested rank mismatch");`);
+        lines.push("}");
+        for (let i = 0; i < state.suffixRank; i += 1) {
+            const dimLocal = state.dimLocals[expr.bindings.length + i];
+            lines.push(`if (${dimLocal} == 0) {`);
+            lines.push(`  ${dimLocal} = jplmm_array_dim(${bodyLocal}, ${i});`);
+            lines.push(`} else if (${dimLocal} != jplmm_array_dim(${bodyLocal}, ${i})) {`);
+            lines.push(`  jplmm_panic("array body produced ragged nested arrays");`);
+            lines.push("}");
+        }
+        lines.push(`if (${state.bodyCellsLocal} == 0) {`);
+        lines.push(`  ${state.bodyCellsLocal} = jplmm_array_total_cells(${bodyLocal});`);
+        lines.push(`} else if (${state.bodyCellsLocal} != jplmm_array_total_cells(${bodyLocal})) {`);
+        lines.push(`  jplmm_panic("array body produced ragged nested arrays");`);
+        lines.push("}");
+        if (state.mode === "prepass") {
+            lines.push(`${state.totalLocal} += ${state.bodyCellsLocal};`);
+        }
+        else {
+            lines.push(`jplmm_copy_words(${state.handleLocal}, ${state.headerWords} + ${state.cursorLocal}, ${bodyLocal}, ${1 + state.suffixRank}, ${state.bodyCellsLocal});`);
+            lines.push(`${state.cursorLocal} += ${state.bodyCellsLocal};`);
+        }
+        return lines.join("\n");
+    }
+    if (state.mode === "prepass") {
+        return `${state.totalLocal} += 1;`;
+    }
+    return `${storeWordStmt(arrayLeafType(expr.resultType), state.handleLocal, `${state.headerWords} + ${state.cursorLocal}`, emitExpr(expr.body, ctx, options))}
+${state.cursorLocal} += 1;`;
+}
+function emitBindingLoopTree(bindings, ctx, options, exprId, dimLocals, index, leafBody) {
+    if (index === bindings.length) {
+        return leafBody;
+    }
+    const binding = bindings[index];
+    const extentLocal = `jplmm_extent_${exprId}_${index}`;
+    const lines = [`{`];
+    lines.push(`  int32_t ${extentLocal} = jplmm_max_i32(1, ${emitExpr(binding.expr, ctx, options)});`);
+    if (dimLocals[index]) {
+        lines.push(`  if (${dimLocals[index]} == 0) {`);
+        lines.push(`    ${dimLocals[index]} = ${extentLocal};`);
+        lines.push(`  } else if (${dimLocals[index]} != ${extentLocal}) {`);
+        lines.push(`    jplmm_panic("array body produced ragged dimensions");`);
+        lines.push("  }");
+    }
+    lines.push(`  for (int32_t ${binding.name} = 0; ${binding.name} < ${extentLocal}; ${binding.name} += 1) {`);
+    lines.push(indent(emitBindingLoopTree(bindings, ctx, options, exprId, dimLocals, index + 1, leafBody), 2));
+    lines.push("  }");
+    lines.push("}");
+    return lines.join("\n");
+}
+function emitNativeTypeHelpers(program, structs) {
+    const arrayTypes = collectArrayTypes(program);
+    const maxRank = arrayTypes.reduce((acc, type) => Math.max(acc, type.dims), 0);
+    const structHelpers = [...structs.values()].map((struct) => emitNativeStructEqualityHelper(struct)).join("\n\n");
+    const arrayHelpers = dedupeTypes(arrayTypes)
+        .map((type) => emitNativeArrayEqualityHelper(type))
+        .join("\n\n");
+    return [emitNativeHeapHelpers(), emitNativeArrayAllocHelpers(maxRank), structHelpers, arrayHelpers]
+        .filter(Boolean)
+        .join("\n\n");
+}
+function emitNativeHeapHelpers() {
+    return `static uint8_t *jplmm_heap = NULL;
+static int32_t jplmm_heap_size = 8;
+static int32_t jplmm_heap_capacity = 0;
+
+static void jplmm_panic(const char *message) {
+  fprintf(stderr, "%s\\n", message);
+  abort();
+}
+
+static void jplmm_ensure_heap_capacity(int32_t needed) {
+  if (jplmm_heap_capacity == 0) {
+    jplmm_heap_capacity = 1 << 20;
+    while (jplmm_heap_capacity < needed) {
+      jplmm_heap_capacity <<= 1;
+    }
+    jplmm_heap = (uint8_t *)calloc((size_t)jplmm_heap_capacity, 1u);
+    if (!jplmm_heap) {
+      jplmm_panic("failed to allocate JPL heap");
+    }
+    return;
+  }
+  if (needed <= jplmm_heap_capacity) {
+    return;
+  }
+  int32_t nextCapacity = jplmm_heap_capacity;
+  while (nextCapacity < needed) {
+    nextCapacity <<= 1;
+  }
+  uint8_t *next = (uint8_t *)realloc(jplmm_heap, (size_t)nextCapacity);
+  if (!next) {
+    jplmm_panic("failed to grow JPL heap");
+  }
+  memset(next + jplmm_heap_capacity, 0, (size_t)(nextCapacity - jplmm_heap_capacity));
+  jplmm_heap = next;
+  jplmm_heap_capacity = nextCapacity;
+}
+
+static void jplmm_reset_heap(void) {
+  jplmm_ensure_heap_capacity(8);
+  jplmm_heap_size = 8;
+}
+
+static int32_t jplmm_alloc_bytes(int32_t bytes) {
+  if (bytes < 0) {
+    jplmm_panic("negative allocation request");
+  }
+  int32_t aligned = (bytes + 7) & ~7;
+  int32_t base = jplmm_heap_size;
+  jplmm_ensure_heap_capacity(base + aligned);
+  memset(jplmm_heap + base, 0, (size_t)aligned);
+  jplmm_heap_size += aligned;
+  return base;
+}
+
+static int32_t jplmm_alloc_words(int32_t words) {
+  return jplmm_alloc_bytes(words * 4);
+}
+
+static inline int32_t jplmm_word_load_i32(int32_t handle, int32_t word) {
+  int32_t value = 0;
+  memcpy(&value, jplmm_heap + handle + (word * 4), sizeof(value));
+  return value;
+}
+
+static inline float jplmm_word_load_f32(int32_t handle, int32_t word) {
+  float value = 0.0f;
+  memcpy(&value, jplmm_heap + handle + (word * 4), sizeof(value));
+  return value;
+}
+
+static inline void jplmm_word_store_i32(int32_t handle, int32_t word, int32_t value) {
+  memcpy(jplmm_heap + handle + (word * 4), &value, sizeof(value));
+}
+
+static inline void jplmm_word_store_f32(int32_t handle, int32_t word, float value) {
+  memcpy(jplmm_heap + handle + (word * 4), &value, sizeof(value));
+}
+
+static inline void jplmm_copy_words(int32_t dstHandle, int32_t dstWord, int32_t srcHandle, int32_t srcWord, int32_t count) {
+  memcpy(jplmm_heap + dstHandle + (dstWord * 4), jplmm_heap + srcHandle + (srcWord * 4), (size_t)count * 4u);
+}
+
+static inline int32_t jplmm_array_rank(int32_t handle) {
+  return jplmm_word_load_i32(handle, 0);
+}
+
+static inline int32_t jplmm_array_dim(int32_t handle, int32_t index) {
+  return jplmm_word_load_i32(handle, 1 + index);
+}
+
+static int32_t jplmm_array_total_cells(int32_t handle) {
+  int32_t total = 1;
+  int32_t rank = jplmm_array_rank(handle);
+  for (int32_t i = 0; i < rank; i += 1) {
+    total = jplmm_sat_mul_i32(total, jplmm_array_dim(handle, i));
+  }
+  return total;
+}
+
+static int32_t jplmm_array_stride(int32_t handle, int32_t index) {
+  int32_t stride = 1;
+  int32_t rank = jplmm_array_rank(handle);
+  for (int32_t i = index + 1; i < rank; i += 1) {
+    stride = jplmm_sat_mul_i32(stride, jplmm_array_dim(handle, i));
+  }
+  return stride;
+}
+
+static int32_t jplmm_array_slice(int32_t source, int32_t consumedRank, int32_t offsetCells) {
+  int32_t srcRank = jplmm_array_rank(source);
+  if (consumedRank > srcRank) {
+    jplmm_panic("array index rank mismatch");
+  }
+  int32_t dstRank = srcRank - consumedRank;
+  int32_t totalCells = 1;
+  int32_t handle = 0;
+  for (int32_t i = 0; i < dstRank; i += 1) {
+    int32_t dim = jplmm_array_dim(source, consumedRank + i);
+    totalCells = jplmm_sat_mul_i32(totalCells, dim);
+  }
+  handle = jplmm_alloc_words(1 + dstRank + totalCells);
+  jplmm_word_store_i32(handle, 0, dstRank);
+  for (int32_t i = 0; i < dstRank; i += 1) {
+    jplmm_word_store_i32(handle, 1 + i, jplmm_array_dim(source, consumedRank + i));
+  }
+  jplmm_copy_words(handle, 1 + dstRank, source, 1 + srcRank + offsetCells, totalCells);
+  return handle;
+}`;
+}
+function emitNativeArrayAllocHelpers(maxRank) {
+    const helpers = [];
+    for (let rank = 1; rank <= maxRank; rank += 1) {
+        const params = Array.from({ length: rank }, (_, idx) => `int32_t d${idx}`).join(", ");
+        const dims = Array.from({ length: rank }, (_, idx) => `  jplmm_word_store_i32(handle, ${idx + 1}, d${idx});`).join("\n");
+        const total = Array.from({ length: rank }, (_, idx) => `  total = jplmm_sat_mul_i32(total, d${idx});`).join("\n");
+        helpers.push(`static int32_t jplmm_array_alloc_r${rank}(${params}) {
+  int32_t total = 1;
+${total}
+  int32_t handle = jplmm_alloc_words(1 + ${rank} + total);
+  jplmm_word_store_i32(handle, 0, ${rank});
+${dims}
+  return handle;
+}`);
+    }
+    return helpers.join("\n\n");
+}
+function emitNativeStructEqualityHelper(struct) {
+    const lines = [`static int ${structEqHelperName(struct.name)}(int32_t a, int32_t b) {`];
+    lines.push("  if (a == b) return 1;");
+    lines.push("  if (a == 0 || b == 0) return 0;");
+    for (let i = 0; i < struct.fields.length; i += 1) {
+        lines.push(`  if (!(${emitEquality(loadWordExpr(struct.fields[i].type, "a", `${i}`), loadWordExpr(struct.fields[i].type, "b", `${i}`), struct.fields[i].type)})) return 0;`);
+    }
+    lines.push("  return 1;");
+    lines.push("}");
+    return lines.join("\n");
+}
+function emitNativeArrayEqualityHelper(type) {
+    const arrayType = expectArrayType(type, "array equality");
+    const lines = [`static int ${arrayEqHelperName(arrayType)}(int32_t a, int32_t b) {`];
+    lines.push("  if (a == b) return 1;");
+    lines.push("  if (a == 0 || b == 0) return 0;");
+    lines.push(`  if (jplmm_array_rank(a) != ${arrayType.dims} || jplmm_array_rank(b) != ${arrayType.dims}) return 0;`);
+    for (let i = 0; i < arrayType.dims; i += 1) {
+        lines.push(`  if (jplmm_array_dim(a, ${i}) != jplmm_array_dim(b, ${i})) return 0;`);
+    }
+    lines.push("  int32_t total = jplmm_array_total_cells(a);");
+    lines.push("  for (int32_t i = 0; i < total; i += 1) {");
+    lines.push(`    if (!(${emitEquality(loadWordExpr(arrayType.element, "a", `${1 + arrayType.dims} + i`), loadWordExpr(arrayType.element, "b", `${1 + arrayType.dims} + i`), arrayType.element)})) return 0;`);
+    lines.push("  }");
+    lines.push("  return 1;");
+    lines.push("}");
+    return lines.join("\n");
+}
+function loadWordExpr(type, handleExpr, wordExpr) {
+    return type.tag === "float"
+        ? `jplmm_word_load_f32(${handleExpr}, ${wordExpr})`
+        : `jplmm_word_load_i32(${handleExpr}, ${wordExpr})`;
+}
+function storeWordStmt(type, handleExpr, wordExpr, valueExpr) {
+    return type.tag === "float"
+        ? `jplmm_word_store_f32(${handleExpr}, ${wordExpr}, ${valueExpr});`
+        : `jplmm_word_store_i32(${handleExpr}, ${wordExpr}, ${valueExpr});`;
+}
+function structEqHelperName(name) {
+    return `jplmm_eq_struct_${sanitizeName(name)}`;
+}
+function arrayEqHelperName(type) {
+    return `jplmm_eq_array_${typeKey(type)}`;
+}
+function typeKey(type) {
+    switch (type.tag) {
+        case "int":
+            return "i32";
+        case "float":
+            return "f32";
+        case "void":
+            return "void";
+        case "named":
+            return `named_${sanitizeName(type.name)}`;
+        case "array":
+            return `arr${type.dims}_${typeKey(type.element)}`;
+        default: {
+            const _never = type;
+            return `${_never}`;
+        }
+    }
+}
+function sanitizeName(name) {
+    return name.replace(/[^A-Za-z0-9_]/g, "_");
+}
+function expectArrayType(type, context) {
+    if (type.tag !== "array") {
+        throw new Error(`${context} requires an array type`);
+    }
+    return type;
+}
+function arrayLeafType(type) {
+    return type.tag === "array" ? arrayLeafType(type.element) : type;
+}
+function collectArrayTypes(program) {
+    const types = [];
+    for (const struct of program.structs) {
+        for (const field of struct.fields) {
+            collectArrayTypesFromType(field.type, types);
+        }
+    }
+    for (const fn of program.functions) {
+        collectArrayTypesFromType(fn.retType, types);
+        for (const param of fn.params) {
+            collectArrayTypesFromType(param.type, types);
+        }
+        for (const stmt of fn.body) {
+            if (stmt.tag !== "gas") {
+                collectArrayTypesFromExpr(stmt.expr, types);
+            }
+        }
+    }
+    for (const global of program.globals) {
+        collectArrayTypesFromExpr(global.expr, types);
+    }
+    return types;
+}
+function collectArrayTypesFromExpr(expr, out) {
+    collectArrayTypesFromType(expr.resultType, out);
+    switch (expr.tag) {
+        case "binop":
+        case "total_div":
+        case "total_mod":
+        case "sat_add":
+        case "sat_sub":
+        case "sat_mul":
+            collectArrayTypesFromExpr(expr.left, out);
+            collectArrayTypesFromExpr(expr.right, out);
+            return;
+        case "unop":
+        case "sat_neg":
+            collectArrayTypesFromExpr(expr.operand, out);
+            return;
+        case "call":
+            for (const arg of expr.args) {
+                collectArrayTypesFromExpr(arg, out);
+            }
+            return;
+        case "rec":
+            for (const arg of expr.args) {
+                collectArrayTypesFromExpr(arg, out);
+            }
+            return;
+        case "struct_cons":
+            for (const arg of expr.fields) {
+                collectArrayTypesFromExpr(arg, out);
+            }
+            return;
+        case "field":
+            collectArrayTypesFromExpr(expr.target, out);
+            return;
+        case "array_cons":
+            for (const element of expr.elements) {
+                collectArrayTypesFromExpr(element, out);
+            }
+            return;
+        case "array_expr":
+        case "sum_expr":
+            for (const binding of expr.bindings) {
+                collectArrayTypesFromExpr(binding.expr, out);
+            }
+            collectArrayTypesFromExpr(expr.body, out);
+            return;
+        case "index":
+            collectArrayTypesFromExpr(expr.array, out);
+            for (const index of expr.indices) {
+                collectArrayTypesFromExpr(index, out);
+            }
+            return;
+        case "nan_to_zero":
+            collectArrayTypesFromExpr(expr.value, out);
+            return;
+        default:
+            return;
+    }
+}
+function collectArrayTypesFromType(type, out) {
+    if (type.tag === "array") {
+        out.push(type);
+        collectArrayTypesFromType(type.element, out);
+    }
+}
+function dedupeTypes(types) {
+    const seen = new Set();
+    const out = [];
+    for (const type of types) {
+        const key = typeKey(type);
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        out.push(type);
+    }
+    return out;
 }
 function emitNativeHelpers() {
     return `static inline int32_t jplmm_clamp_i64_to_i32(int64_t x) {

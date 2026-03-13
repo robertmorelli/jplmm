@@ -21,98 +21,194 @@ const BUILTIN_FUNCTIONS = new Set([
 export function resolveProgram(program) {
     const diagnostics = [];
     const definedFns = new Set();
+    const definedStructs = new Set();
     const globalVars = new Set();
     for (const cmd of program.commands) {
-        if (cmd.tag === "fn_def") {
-            if (definedFns.has(cmd.name)) {
-                diagnostics.push(error(`Duplicate function '${cmd.name}'`, 0, 0, "DUP_FN"));
-            }
-            resolveFunction(cmd, diagnostics, definedFns);
-            definedFns.add(cmd.name);
-            continue;
-        }
-        if (cmd.tag === "let_cmd") {
-            resolveExpr(cmd.expr, diagnostics, definedFns, globalVars, undefined);
-            if (cmd.lvalue.tag === "var") {
-                if (globalVars.has(cmd.lvalue.name)) {
-                    diagnostics.push(error(`Shadowing is not allowed: '${cmd.lvalue.name}'`, 0, 0, "SHADOW"));
-                }
-                globalVars.add(cmd.lvalue.name);
-            }
-            else {
-                diagnostics.push(error("Only simple variable lvalues are supported in v1", 0, 0, "LHS_V1"));
-            }
-        }
+        resolveProgramCmd(cmd, diagnostics, definedFns, definedStructs, globalVars);
     }
+    reportUnusedLets(program, diagnostics);
     return { program, diagnostics };
 }
-function resolveFunction(cmd, diagnostics, definedFns) {
+function resolveProgramCmd(cmd, diagnostics, definedFns, definedStructs, globalVars) {
+    if (cmd.tag === "time") {
+        resolveProgramCmd(cmd.cmd, diagnostics, definedFns, definedStructs, globalVars);
+        return;
+    }
+    if (cmd.tag === "struct_def") {
+        resolveStructDef(cmd, diagnostics, definedStructs);
+        return;
+    }
+    if (cmd.tag === "fn_def") {
+        resolveFnDef(cmd, diagnostics, definedFns, definedStructs);
+        return;
+    }
+    resolveTopLevelCmd(cmd, diagnostics, definedFns, definedStructs, globalVars);
+}
+function resolveStructDef(cmd, diagnostics, definedStructs) {
+    if (definedStructs.has(cmd.name)) {
+        diagnostics.push(nodeError(cmd, `Duplicate struct '${cmd.name}'`, "DUP_STRUCT"));
+    }
+    const fieldNames = new Set();
+    for (const field of cmd.fields) {
+        if (fieldNames.has(field.name)) {
+            diagnostics.push(nodeError(field, `Duplicate field '${field.name}' in struct '${cmd.name}'`, "DUP_FIELD"));
+        }
+        fieldNames.add(field.name);
+        resolveType(field.type, diagnostics, definedStructs);
+    }
+    definedStructs.add(cmd.name);
+}
+function resolveFnDef(cmd, diagnostics, definedFns, definedStructs) {
+    if (cmd.keyword === "ref" && !definedFns.has(cmd.name)) {
+        diagnostics.push(nodeError(cmd, `ref '${cmd.name}' requires an earlier fun/def/fn definition`, "REF_NO_BASE"));
+    }
+    else if (cmd.keyword !== "ref" && definedFns.has(cmd.name)) {
+        diagnostics.push(nodeError(cmd, `Duplicate function '${cmd.name}'`, "DUP_FN"));
+    }
+    if (cmd.name === "main" && cmd.params.length !== 0) {
+        diagnostics.push(nodeError(cmd, "Function 'main' must not take parameters", "MAIN_ARITY"));
+    }
+    for (const param of cmd.params) {
+        resolveType(param.type, diagnostics, definedStructs);
+    }
+    resolveType(cmd.retType, diagnostics, definedStructs);
+    resolveFunction(cmd, diagnostics, definedFns, definedStructs);
+    if (cmd.keyword !== "ref") {
+        definedFns.add(cmd.name);
+    }
+}
+function resolveTopLevelCmd(cmd, diagnostics, definedFns, definedStructs, globalVars) {
+    switch (cmd.tag) {
+        case "let_cmd":
+            resolveExpr(cmd.expr, diagnostics, definedFns, definedStructs, globalVars, undefined);
+            bindLValue(cmd.lvalue, diagnostics, globalVars, "top", definedFns, definedStructs, undefined);
+            return;
+        case "read_image":
+            bindArgument(cmd.target, diagnostics, globalVars);
+            return;
+        case "write_image":
+            resolveExpr(cmd.expr, diagnostics, definedFns, definedStructs, globalVars, undefined);
+            return;
+        case "show":
+            resolveExpr(cmd.expr, diagnostics, definedFns, definedStructs, globalVars, undefined);
+            return;
+        case "print":
+            return;
+        default: {
+            const _never = cmd;
+            return _never;
+        }
+    }
+}
+function resolveFunction(cmd, diagnostics, definedFns, definedStructs) {
     const scope = new Set();
     for (const p of cmd.params) {
         if (scope.has(p.name)) {
-            diagnostics.push(error(`Duplicate parameter '${p.name}' in '${cmd.name}'`, 0, 0, "DUP_PARAM"));
+            diagnostics.push(nodeError(p, `Duplicate parameter '${p.name}' in '${cmd.name}'`, "DUP_PARAM"));
         }
         scope.add(p.name);
     }
     const ctx = {
         fnName: cmd.name,
+        paramNames: cmd.params.map((param) => param.name),
         resAvailable: false,
         seenRec: false,
         radCount: 0,
         gasCount: 0,
+        hasPendingRet: false,
+        pendingRetUsed: false,
+        pendingRetStmt: null,
+        firstRadStmt: null,
+        gasStmts: [],
+        firstRecExpr: null,
         scope,
     };
     for (const stmt of cmd.body) {
-        resolveStmt(stmt, diagnostics, definedFns, ctx);
+        resolveStmt(stmt, diagnostics, definedFns, definedStructs, ctx);
     }
     if (ctx.gasCount > 1) {
-        diagnostics.push(error(`Function '${cmd.name}' has multiple gas statements`, 0, 0, "MULTI_GAS"));
+        diagnostics.push(nodeError(ctx.gasStmts[1] ?? ctx.gasStmts[0] ?? cmd, `Function '${cmd.name}' has multiple gas statements`, "MULTI_GAS"));
     }
     if (ctx.gasCount > 0 && ctx.radCount > 0) {
-        diagnostics.push(error(`Function '${cmd.name}' mixes 'rad' and 'gas' (mutually exclusive)`, 0, 0, "RAD_GAS_MIX"));
+        diagnostics.push(nodeError(ctx.gasStmts[0] ?? ctx.firstRadStmt ?? cmd, `Function '${cmd.name}' mixes 'rad' and 'gas' (mutually exclusive)`, "RAD_GAS_MIX"));
     }
     if (ctx.seenRec && ctx.gasCount + ctx.radCount === 0) {
-        diagnostics.push(error(`Function '${cmd.name}' uses 'rec' but has no 'rad' or 'gas'`, 0, 0, "REC_NO_PROOF"));
+        diagnostics.push(nodeError(ctx.firstRecExpr ?? cmd, `Function '${cmd.name}' uses 'rec' but has no 'rad' or 'gas'`, "REC_NO_PROOF"));
     }
-    if (ctx.gasCount > 0) {
-        const gasStmt = cmd.body.find((s) => s.tag === "gas");
-        if (gasStmt && gasStmt.limit === "inf") {
-            diagnostics.push(warning(`Function '${cmd.name}' uses gas inf — termination is not guaranteed`, 0, 0, "GAS_INF"));
-        }
+    const gasStmt = ctx.gasStmts[0];
+    if (gasStmt && gasStmt.limit === "inf") {
+        diagnostics.push(nodeWarning(gasStmt, `Function '${cmd.name}' uses gas inf — termination is not guaranteed`, "GAS_INF"));
     }
 }
-function resolveStmt(stmt, diagnostics, definedFns, ctx) {
+function resolveStmt(stmt, diagnostics, definedFns, definedStructs, ctx) {
     if (stmt.tag === "let") {
-        resolveExpr(stmt.expr, diagnostics, definedFns, ctx.scope, ctx);
-        bindLValue(stmt.lvalue, diagnostics, ctx.scope);
+        resolveExpr(stmt.expr, diagnostics, definedFns, definedStructs, ctx.scope, ctx);
+        bindLValue(stmt.lvalue, diagnostics, ctx.scope, "local", definedFns, definedStructs, ctx);
         return;
     }
     if (stmt.tag === "ret") {
-        resolveExpr(stmt.expr, diagnostics, definedFns, ctx.scope, ctx);
+        resolveExpr(stmt.expr, diagnostics, definedFns, definedStructs, ctx.scope, ctx);
+        reportIgnoredRetIfNeeded(ctx, diagnostics);
         ctx.resAvailable = true;
+        ctx.hasPendingRet = true;
+        ctx.pendingRetUsed = false;
+        ctx.pendingRetStmt = stmt;
         return;
     }
     if (stmt.tag === "rad") {
         ctx.radCount += 1;
-        resolveExpr(stmt.expr, diagnostics, definedFns, ctx.scope, ctx);
+        ctx.firstRadStmt ??= stmt;
+        resolveExpr(stmt.expr, diagnostics, definedFns, definedStructs, ctx.scope, ctx);
         return;
     }
     if (stmt.tag === "gas") {
         ctx.gasCount += 1;
+        ctx.gasStmts.push(stmt);
     }
 }
-function bindLValue(lvalue, diagnostics, scope) {
-    if (lvalue.tag !== "var") {
-        diagnostics.push(error("Only simple variable lvalues are supported in v1", 0, 0, "LHS_V1"));
-        return;
+function bindLValue(lvalue, diagnostics, scope, mode, definedFns, definedStructs, fnCtx) {
+    switch (lvalue.tag) {
+        case "var":
+            if (scope.has(lvalue.name)) {
+                diagnostics.push(nodeError(lvalue, `Shadowing is not allowed: '${lvalue.name}'`, "SHADOW"));
+                return;
+            }
+            scope.add(lvalue.name);
+            return;
+        case "field":
+            if (!scope.has(lvalue.base)) {
+                diagnostics.push(nodeError(lvalue, `Unbound variable '${lvalue.base}'`, "UNBOUND_VAR"));
+            }
+            return;
+        case "tuple":
+            if (mode === "local") {
+                diagnostics.push(nodeError(lvalue, "Tuple lvalues are only supported for read image targets", "LHS_TUPLE"));
+                return;
+            }
+            for (const item of lvalue.items) {
+                bindLValue(item, diagnostics, scope, mode, definedFns, definedStructs, fnCtx);
+            }
+            return;
+        default: {
+            const _never = lvalue;
+            return _never;
+        }
     }
-    if (scope.has(lvalue.name)) {
-        diagnostics.push(error(`Shadowing is not allowed: '${lvalue.name}'`, 0, 0, "SHADOW"));
-        return;
-    }
-    scope.add(lvalue.name);
 }
-function resolveExpr(expr, diagnostics, definedFns, scope, fnCtx) {
+function bindArgument(argument, diagnostics, scope) {
+    if (argument.tag === "var") {
+        if (scope.has(argument.name)) {
+            diagnostics.push(nodeError(argument, `Shadowing is not allowed: '${argument.name}'`, "SHADOW"));
+            return;
+        }
+        scope.add(argument.name);
+        return;
+    }
+    for (const item of argument.items) {
+        bindArgument(item, diagnostics, scope);
+    }
+}
+function resolveExpr(expr, diagnostics, definedFns, definedStructs, scope, fnCtx) {
     switch (expr.tag) {
         case "int_lit":
         case "float_lit":
@@ -120,78 +216,299 @@ function resolveExpr(expr, diagnostics, definedFns, scope, fnCtx) {
             return;
         case "var":
             if (!scope.has(expr.name)) {
-                diagnostics.push(error(`Unbound variable '${expr.name}'`, 0, 0, "UNBOUND_VAR"));
+                diagnostics.push(nodeError(expr, `Unbound variable '${expr.name}'`, "UNBOUND_VAR"));
             }
             return;
         case "res":
             if (!fnCtx) {
-                diagnostics.push(error("res is only valid inside a function body", 0, 0, "RES_TOP"));
+                diagnostics.push(nodeError(expr, "res is only valid inside a function body", "RES_TOP"));
             }
             else if (!fnCtx.resAvailable) {
-                diagnostics.push(error("res used before first ret", 0, 0, "RES_BEFORE_RET"));
+                diagnostics.push(nodeError(expr, "res used before first ret", "RES_BEFORE_RET"));
+            }
+            else {
+                markPendingRetUsed(fnCtx);
             }
             return;
         case "rec":
             if (!fnCtx) {
-                diagnostics.push(error("rec is only valid inside a function body", 0, 0, "REC_TOP"));
+                diagnostics.push(nodeError(expr, "rec is only valid inside a function body", "REC_TOP"));
             }
             else {
                 fnCtx.seenRec = true;
+                fnCtx.firstRecExpr ??= expr;
                 if (!fnCtx.resAvailable) {
-                    diagnostics.push(error("rec used before first ret", 0, 0, "REC_BEFORE_RET"));
+                    diagnostics.push(nodeError(expr, "rec used before first ret", "REC_BEFORE_RET"));
+                }
+                else {
+                    markPendingRetUsed(fnCtx);
+                }
+                if (isStaticExactRec(expr, fnCtx.paramNames)) {
+                    diagnostics.push(nodeWarning(expr, `Function '${fnCtx.fnName}' calls rec with the current parameters unchanged; this statically collapses to res`, "REC_STATIC_COLLAPSE"));
                 }
             }
             for (const arg of expr.args) {
-                resolveExpr(arg, diagnostics, definedFns, scope, fnCtx);
+                resolveExpr(arg, diagnostics, definedFns, definedStructs, scope, fnCtx);
             }
             return;
         case "binop":
-            resolveExpr(expr.left, diagnostics, definedFns, scope, fnCtx);
-            resolveExpr(expr.right, diagnostics, definedFns, scope, fnCtx);
+            resolveExpr(expr.left, diagnostics, definedFns, definedStructs, scope, fnCtx);
+            resolveExpr(expr.right, diagnostics, definedFns, definedStructs, scope, fnCtx);
             return;
         case "unop":
-            resolveExpr(expr.operand, diagnostics, definedFns, scope, fnCtx);
+            resolveExpr(expr.operand, diagnostics, definedFns, definedStructs, scope, fnCtx);
             return;
         case "call":
             if (!BUILTIN_FUNCTIONS.has(expr.name)) {
                 if (fnCtx && expr.name === fnCtx.fnName) {
-                    diagnostics.push(error(`Direct self-call '${expr.name}(...)' is not allowed; use rec(...)`, 0, 0));
+                    diagnostics.push(nodeError(expr, `Direct self-call '${expr.name}(...)' is not allowed; use rec(...)`));
                 }
                 else if (!definedFns.has(expr.name)) {
-                    diagnostics.push(error(`Function '${expr.name}' not in scope (single-pass binding)`, 0, 0));
+                    diagnostics.push(nodeError(expr, `Function '${expr.name}' not in scope (single-pass binding)`));
                 }
             }
             for (const arg of expr.args) {
-                resolveExpr(arg, diagnostics, definedFns, scope, fnCtx);
+                resolveExpr(arg, diagnostics, definedFns, definedStructs, scope, fnCtx);
             }
             return;
         case "field":
-            resolveExpr(expr.target, diagnostics, definedFns, scope, fnCtx);
+            resolveExpr(expr.target, diagnostics, definedFns, definedStructs, scope, fnCtx);
             return;
         case "index":
-            resolveExpr(expr.array, diagnostics, definedFns, scope, fnCtx);
+            resolveExpr(expr.array, diagnostics, definedFns, definedStructs, scope, fnCtx);
             for (const idx of expr.indices) {
-                resolveExpr(idx, diagnostics, definedFns, scope, fnCtx);
+                resolveExpr(idx, diagnostics, definedFns, definedStructs, scope, fnCtx);
             }
             return;
         case "struct_cons":
+            if (!definedStructs.has(expr.name)) {
+                diagnostics.push(nodeError(expr, `Struct '${expr.name}' not in scope (single-pass binding)`, "STRUCT_SCOPE"));
+            }
             for (const v of expr.fields) {
-                resolveExpr(v, diagnostics, definedFns, scope, fnCtx);
+                resolveExpr(v, diagnostics, definedFns, definedStructs, scope, fnCtx);
             }
             return;
         case "array_cons":
             for (const v of expr.elements) {
-                resolveExpr(v, diagnostics, definedFns, scope, fnCtx);
+                resolveExpr(v, diagnostics, definedFns, definedStructs, scope, fnCtx);
             }
             return;
         case "array_expr":
         case "sum_expr":
-            diagnostics.push(error(`${expr.tag} parsing/resolution is not implemented in v1`, 0, 0, "NYI_V1"));
+            resolveBindings(expr.bindings, diagnostics, definedFns, definedStructs, scope, fnCtx, expr.body);
             return;
         default: {
             const _never = expr;
             return _never;
         }
     }
+}
+function markPendingRetUsed(ctx) {
+    if (ctx.hasPendingRet) {
+        ctx.pendingRetUsed = true;
+    }
+}
+function isStaticExactRec(expr, paramNames) {
+    return expr.args.length === paramNames.length
+        && expr.args.every((arg, index) => arg.tag === "var" && arg.name === paramNames[index]);
+}
+function reportIgnoredRetIfNeeded(ctx, diagnostics) {
+    if (ctx.hasPendingRet && !ctx.pendingRetUsed) {
+        diagnostics.push(nodeError(ctx.pendingRetStmt, `Function '${ctx.fnName}' overwrites a previous ret before any rec/res can observe it`, "IGNORED_RET"));
+    }
+}
+function resolveBindings(bindings, diagnostics, definedFns, definedStructs, parentScope, fnCtx, body) {
+    const localScope = new Set(parentScope);
+    for (const binding of bindings) {
+        resolveExpr(binding.expr, diagnostics, definedFns, definedStructs, localScope, fnCtx);
+        if (localScope.has(binding.name)) {
+            diagnostics.push(nodeError(binding, `Shadowing is not allowed: '${binding.name}'`, "SHADOW"));
+        }
+        localScope.add(binding.name);
+    }
+    resolveExpr(body, diagnostics, definedFns, definedStructs, localScope, fnCtx);
+}
+function resolveType(type, diagnostics, definedStructs) {
+    if (type.tag === "array") {
+        resolveType(type.element, diagnostics, definedStructs);
+        return;
+    }
+    if (type.tag === "named" && !definedStructs.has(type.name)) {
+        diagnostics.push(nodeError(type, `Unknown type '${type.name}'`, "TYPE_UNKNOWN"));
+    }
+}
+function reportUnusedLets(program, diagnostics) {
+    const topScope = new Set();
+    const topLets = new Map();
+    const topUsed = new Set();
+    for (const cmd of program.commands) {
+        analyzeTopLevelUsage(cmd, topScope, topLets, topUsed);
+    }
+    for (const [name, binding] of topLets) {
+        if (!topUsed.has(name)) {
+            diagnostics.push(nodeError(binding, `Unused let '${name}'`, "UNUSED_LET"));
+        }
+    }
+    for (const cmd of program.commands) {
+        const fnDef = unwrapTimedDefinition(cmd, "fn_def");
+        if (!fnDef) {
+            continue;
+        }
+        reportUnusedFunctionLets(fnDef, diagnostics);
+    }
+}
+function analyzeTopLevelUsage(cmd, scope, letBindings, usedBindings) {
+    if (cmd.tag === "time") {
+        analyzeTopLevelUsage(cmd.cmd, scope, letBindings, usedBindings);
+        return;
+    }
+    switch (cmd.tag) {
+        case "fn_def":
+        case "struct_def":
+        case "print":
+        case "read_image":
+            return;
+        case "let_cmd":
+            markExprUsage(cmd.expr, scope, letBindings, usedBindings);
+            markLValueUsage(cmd.lvalue, scope, letBindings, usedBindings);
+            if (cmd.lvalue.tag === "var") {
+                scope.add(cmd.lvalue.name);
+                letBindings.set(cmd.lvalue.name, cmd.lvalue);
+            }
+            return;
+        case "show":
+            markExprUsage(cmd.expr, scope, letBindings, usedBindings);
+            return;
+        case "write_image":
+            markExprUsage(cmd.expr, scope, letBindings, usedBindings);
+            return;
+        default: {
+            const _never = cmd;
+            return _never;
+        }
+    }
+}
+function reportUnusedFunctionLets(cmd, diagnostics) {
+    const scope = new Set(cmd.params.map((param) => param.name));
+    const letBindings = new Map();
+    const usedBindings = new Set();
+    for (const stmt of cmd.body) {
+        if (stmt.tag === "let") {
+            markExprUsage(stmt.expr, scope, letBindings, usedBindings);
+            markLValueUsage(stmt.lvalue, scope, letBindings, usedBindings);
+            if (stmt.lvalue.tag === "var") {
+                scope.add(stmt.lvalue.name);
+                letBindings.set(stmt.lvalue.name, stmt.lvalue);
+            }
+            continue;
+        }
+        if (stmt.tag === "ret" || stmt.tag === "rad") {
+            markExprUsage(stmt.expr, scope, letBindings, usedBindings);
+        }
+    }
+    for (const [name, binding] of letBindings) {
+        if (!usedBindings.has(name)) {
+            diagnostics.push(nodeError(binding, `Unused let '${name}' in '${cmd.name}'`, "UNUSED_LET"));
+        }
+    }
+}
+function markExprUsage(expr, scope, letBindings, usedBindings) {
+    switch (expr.tag) {
+        case "int_lit":
+        case "float_lit":
+        case "void_lit":
+        case "res":
+            return;
+        case "var":
+            if (scope.has(expr.name) && letBindings.has(expr.name)) {
+                usedBindings.add(expr.name);
+            }
+            return;
+        case "binop":
+            markExprUsage(expr.left, scope, letBindings, usedBindings);
+            markExprUsage(expr.right, scope, letBindings, usedBindings);
+            return;
+        case "unop":
+            markExprUsage(expr.operand, scope, letBindings, usedBindings);
+            return;
+        case "call":
+            for (const arg of expr.args) {
+                markExprUsage(arg, scope, letBindings, usedBindings);
+            }
+            return;
+        case "index":
+            markExprUsage(expr.array, scope, letBindings, usedBindings);
+            for (const idx of expr.indices) {
+                markExprUsage(idx, scope, letBindings, usedBindings);
+            }
+            return;
+        case "field":
+            markExprUsage(expr.target, scope, letBindings, usedBindings);
+            return;
+        case "struct_cons":
+            for (const field of expr.fields) {
+                markExprUsage(field, scope, letBindings, usedBindings);
+            }
+            return;
+        case "array_cons":
+            for (const element of expr.elements) {
+                markExprUsage(element, scope, letBindings, usedBindings);
+            }
+            return;
+        case "array_expr":
+        case "sum_expr": {
+            const localScope = new Set(scope);
+            for (const binding of expr.bindings) {
+                markExprUsage(binding.expr, localScope, letBindings, usedBindings);
+                localScope.add(binding.name);
+            }
+            markExprUsage(expr.body, localScope, letBindings, usedBindings);
+            return;
+        }
+        case "rec":
+            for (const arg of expr.args) {
+                markExprUsage(arg, scope, letBindings, usedBindings);
+            }
+            return;
+        default: {
+            const _never = expr;
+            return _never;
+        }
+    }
+}
+function markLValueUsage(lvalue, scope, letBindings, usedBindings) {
+    switch (lvalue.tag) {
+        case "var":
+            return;
+        case "field":
+            if (scope.has(lvalue.base) && letBindings.has(lvalue.base)) {
+                usedBindings.add(lvalue.base);
+            }
+            return;
+        case "tuple":
+            for (const item of lvalue.items) {
+                markLValueUsage(item, scope, letBindings, usedBindings);
+            }
+            return;
+        default: {
+            const _never = lvalue;
+            return _never;
+        }
+    }
+}
+function nodeError(node, message, code) {
+    return error(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
+}
+function nodeWarning(node, message, code) {
+    return warning(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
+}
+function unwrapTimedDefinition(cmd, tag) {
+    if (cmd.tag === tag) {
+        return cmd;
+    }
+    if (cmd.tag === "time" && cmd.cmd.tag === tag) {
+        return cmd.cmd;
+    }
+    return null;
 }
 //# sourceMappingURL=resolve.js.map

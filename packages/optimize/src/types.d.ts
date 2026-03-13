@@ -41,6 +41,8 @@ export type FunctionImplementation = ClosedFormImplementation | LutImplementatio
 export type ResearchCandidate = {
     pass: "aitken" | "linear_speculation";
     reason: string;
+    applied?: boolean;
+    blockedByDefinition?: boolean;
 };
 export type OptimizeArtifacts = {
     rangeMap: Map<number, Interval>;
@@ -59,7 +61,9 @@ export type OptimizeOptions = {
     parameterRangeHints?: ParameterRangeHints;
     enableResearchPasses?: boolean;
     lutThreshold?: number;
+    disabledPasses?: DisableablePassName[];
 };
+export type DisableablePassName = "guard_elimination" | "closed_form" | "lut_tabulation" | "aitken" | "linear_speculation";
 export type OptimizeResult = {
     program: IRProgram;
     artifacts: OptimizeArtifacts;
@@ -68,6 +72,18 @@ export type OptimizeResult = {
 export type ExecuteOptions = {
     artifacts?: OptimizeArtifacts;
 };
+export type RuntimeStructValue = {
+    kind: "struct";
+    typeName: string;
+    fields: RuntimeValue[];
+};
+export type RuntimeArrayValue = {
+    kind: "array";
+    elementType: Type;
+    dims: number[];
+    values: RuntimeValue[];
+};
+export type RuntimeValue = number | RuntimeStructValue | RuntimeArrayValue;
 export type ExecuteStats = {
     exprEvaluations: number;
     functionCalls: number;
@@ -80,7 +96,7 @@ export type ExecuteStats = {
     implementationHits: Record<string, number>;
 };
 export type ExecuteResult = {
-    value: number;
+    value: RuntimeValue;
     stats: ExecuteStats;
 };
 export type EvaluateContext = {

@@ -1,31 +1,52 @@
-import { checkStructuralDecrease, collectRecSites, findRadExpr, hasRec } from "./structural";
-export function verifyProgram(program) {
+import { typecheckProgram } from "@jplmm/frontend";
+import { analyzeIrFunction, analyzeIrProofSites, buildCanonicalProgram, hasRec, } from "@jplmm/proof";
+export function verifyProgram(program, typeMap) {
     const proofMap = new Map();
     const diagnostics = [];
+    const effectiveTypeMap = typeMap ?? typecheckProgram(program).typeMap;
+    const canonical = buildCanonicalProgram(program, effectiveTypeMap);
+    const canonicalFns = new Map(canonical.functions.map((fn) => [fn.name, fn]));
+    const structDefs = new Map(canonical.structs.map((struct) => [struct.name, struct.fields]));
+    const traceMap = new Map();
+    for (const fn of canonical.functions) {
+        const analysis = analyzeIrFunction(fn, structDefs);
+        traceMap.set(fn.name, {
+            fnName: fn.name,
+            canonical: fn,
+            hasRec: hasRec(fn),
+            paramValues: analysis.paramValues,
+            result: analysis.result,
+            stmtSemantics: analysis.stmtSemantics,
+            radSites: analysis.radSites,
+            proofSites: analyzeIrProofSites(fn, analysis),
+            callSigs: analysis.callSigs,
+        });
+    }
     for (const cmd of program.commands) {
-        if (cmd.tag !== "fn_def") {
+        const fn = unwrapTimedDefinition(cmd, "fn_def");
+        if (!fn) {
             continue;
         }
-        const result = verifyFunction(cmd, diagnostics);
+        const trace = traceMap.get(fn.name) ?? null;
+        const result = verifyFunction(fn.name, canonicalFns.get(fn.name) ?? null, trace, diagnostics);
         if (result) {
-            proofMap.set(cmd.name, result);
+            proofMap.set(fn.name, result);
         }
     }
-    return { proofMap, diagnostics };
+    return { proofMap, diagnostics, canonicalProgram: canonical, traceMap };
 }
-function verifyFunction(fn, diagnostics) {
-    const recPresent = hasRec(fn.body);
-    if (!recPresent) {
+function verifyFunction(fnName, fn, trace, diagnostics) {
+    if (!fn || !hasRec(fn)) {
         return null;
     }
     const gas = fn.body.find((s) => s.tag === "gas");
     if (gas) {
         if (gas.limit === "inf") {
             diagnostics.push({
-                fnName: fn.name,
+                fnName,
                 code: "VERIFY_GAS_INF",
                 severity: "warning",
-                message: `${fn.name}: gas inf disables totality guarantee`,
+                message: `${fnName}: gas inf disables totality guarantee`,
             });
             return {
                 status: "unverified",
@@ -39,13 +60,22 @@ function verifyFunction(fn, diagnostics) {
             details: `bounded by gas ${gas.limit}`,
         };
     }
-    const rad = findRadExpr(fn.body);
-    if (!rad) {
+    const analysis = trace
+        ? {
+            paramValues: trace.paramValues,
+            result: trace.result,
+            stmtSemantics: trace.stmtSemantics,
+            radSites: trace.radSites,
+            recSites: trace.proofSites.map((site) => site.site),
+            callSigs: trace.callSigs,
+        }
+        : analyzeIrFunction(fn);
+    if (analysis.radSites.length === 0) {
         diagnostics.push({
-            fnName: fn.name,
+            fnName,
             code: "VERIFY_NO_PROOF",
             severity: "error",
-            message: `${fn.name}: rec used without rad or gas`,
+            message: `${fnName}: rec used without rad or gas`,
         });
         return {
             status: "rejected",
@@ -53,41 +83,40 @@ function verifyFunction(fn, diagnostics) {
             details: "no proof annotation",
         };
     }
-    if (fn.params.length !== 1 || fn.params[0]?.type.tag !== "int") {
-        diagnostics.push({
-            fnName: fn.name,
-            code: "VERIFY_STRUCTURAL_UNSUPPORTED",
-            severity: "error",
-            message: `${fn.name}: structural verifier currently supports one int parameter`,
-        });
-        return {
-            status: "rejected",
-            method: "structural",
-            details: "unsupported shape for structural verifier",
-        };
-    }
-    const paramName = fn.params[0].name;
-    const recSites = collectRecSites(fn.body);
-    for (const site of recSites) {
-        const check = checkStructuralDecrease(paramName, rad, site);
-        if (!check.ok) {
+    const methods = [];
+    const details = [];
+    const siteTraces = trace?.proofSites ?? analyzeIrProofSites(fn, analysis);
+    for (const trace of siteTraces) {
+        const winner = trace.obligations.find((obligation) => obligation.proved) ?? null;
+        if (!winner) {
             diagnostics.push({
-                fnName: fn.name,
-                code: "VERIFY_STRUCTURAL_FAIL",
+                fnName,
+                code: "VERIFY_PROOF_FAIL",
                 severity: "error",
-                message: `${fn.name}: ${check.reason}`,
+                message: `${fnName}: rec site ${trace.siteIndex + 1} failed proof obligations; ${trace.reasons.join("; ")}; consider using gas N if a convergence proof is not possible`,
             });
             return {
                 status: "rejected",
-                method: "structural",
-                details: check.reason,
+                method: "none",
+                details: trace.reasons.join("; "),
             };
         }
+        methods.push(winner.method ?? "structural");
+        details.push(winner.details ?? `rec site ${trace.siteIndex + 1}: proof succeeded`);
     }
     return {
         status: "verified",
-        method: "structural",
-        details: "all rec sites structurally decrease",
+        method: methods.some((method) => method === "smt") ? "smt" : "structural",
+        details: details.join("; "),
     };
+}
+function unwrapTimedDefinition(cmd, tag) {
+    if (cmd.tag === tag) {
+        return cmd;
+    }
+    if (cmd.tag === "time" && cmd.cmd.tag === tag) {
+        return cmd.cmd;
+    }
+    return null;
 }
 //# sourceMappingURL=verify.js.map

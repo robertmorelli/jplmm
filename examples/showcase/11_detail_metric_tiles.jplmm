@@ -1,23 +1,23 @@
 struct Pixel { r:int, g:int, b:int }
 struct Vec4 { a:int, b:int, c:int, d:int }
 
-fn clamp8(x:int): int {
+fun clamp8(x:int): int {
   ret clamp(x, 0, 255);
 }
 
-fn mk(r:int, g:int, b:int): Pixel {
+fun mk(r:int, g:int, b:int): Pixel {
   ret Pixel { clamp8(r), clamp8(g), clamp8(b) };
 }
 
-fn luma(p:Pixel): int {
+fun luma(p:Pixel): int {
   ret (p.r * 3 + p.g * 4 + p.b) / 8;
 }
 
-fn sample(img:Pixel[][], h:int, w:int, y:int, x:int): Pixel {
+fun sample(img:Pixel[][], h:int, w:int, y:int, x:int): Pixel {
   ret img[clamp(y, 0, h - 1)][clamp(x, 0, w - 1)];
 }
 
-fn block4(img:Pixel[][], h:int, w:int, y:int, x:int): Vec4 {
+fun block4(img:Pixel[][], h:int, w:int, y:int, x:int): Vec4 {
   ret Vec4 {
     luma(sample(img, h, w, y, x)),
     luma(sample(img, h, w, y, x + 1)),
@@ -26,38 +26,38 @@ fn block4(img:Pixel[][], h:int, w:int, y:int, x:int): Vec4 {
   };
 }
 
-fn pack4(a:int, b:int, c:int, d:int): Vec4 {
+fun pack4(a:int, b:int, c:int, d:int): Vec4 {
   ret Vec4 { a, b, c, d };
 }
 
-fn stage1(v:Vec4): Vec4 {
+fun stage1(v:Vec4): Vec4 {
   ret pack4(min(v.a, v.b), max(v.a, v.b), min(v.c, v.d), max(v.c, v.d));
 }
 
-fn stage2(v:Vec4): Vec4 {
+fun stage2(v:Vec4): Vec4 {
   ret pack4(min(v.a, v.c), min(v.b, v.d), max(v.a, v.c), max(v.b, v.d));
 }
 
-fn stage3(v:Vec4): Vec4 {
+fun stage3(v:Vec4): Vec4 {
   ret pack4(v.a, min(v.b, v.c), max(v.b, v.c), v.d);
 }
 
-fn sort4(v:Vec4): Vec4 {
+fun sort4(v:Vec4): Vec4 {
   let s1 = stage1(v);
   let s2 = stage2(s1);
   ret stage3(s2);
 }
 
-fn block_metric(img:Pixel[][], h:int, w:int, y:int, x:int): int {
+fun block_metric(img:Pixel[][], h:int, w:int, y:int, x:int): int {
   let s = sort4(block4(img, h, w, y, x));
   ret (s.b + s.c + luma(sample(img, h, w, y, x)) / 2) / 2;
 }
 
-fn metric_grid(img:Pixel[][], h:int, w:int): int[][] {
+fun metric_grid(img:Pixel[][], h:int, w:int): int[][] {
   ret array [by:h, bx:w] block_metric(img, h, w, by * 2, bx * 2);
 }
 
-fn row_profile(img:Pixel[][], h:int, w:int): int[] {
+fun row_profile(img:Pixel[][], h:int, w:int): int[] {
   let metrics = metric_grid(img, h, w);
   ret array [y:h] sum [x:w] metrics[y][x];
 }

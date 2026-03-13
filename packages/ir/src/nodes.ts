@@ -1,4 +1,4 @@
-import type { BinOp, GasLimit, NodeId, Param, StructField, Type, UnOp } from "@jplmm/ast";
+import type { BinOp, FunctionKeyword, GasLimit, NodeId, Param, StructField, Type, UnOp } from "@jplmm/ast";
 
 export type IRBinding = {
   name: string;
@@ -51,6 +51,7 @@ export type IRStmt =
 
 export type IRFunction = {
   name: string;
+  keyword: FunctionKeyword;
   params: Param[];
   retType: Type;
   body: IRStmt[];

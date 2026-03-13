@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-03-13T00:19:24.292Z",
+  "generatedAt": "2026-03-13T00:25:03.641Z",
   "results": [
     {
       "name": "closed_form_steps",
@@ -7,16 +7,16 @@
       "implementation": "closed_form_linear_countdown",
       "value": "401",
       "runtime": {
-        "baselineMs": 294.919,
-        "optimizedMs": 1.44,
-        "speedup": 204.805,
+        "baselineMs": 293.985,
+        "optimizedMs": 1.343,
+        "speedup": 218.881,
         "baselineIterations": 3000,
         "optimizedIterations": 3000
       },
       "nativeArm64": {
-        "baselineMs": 766.254,
-        "optimizedMs": 241.04,
-        "speedup": 3.179,
+        "baselineMs": 783.955,
+        "optimizedMs": 199.783,
+        "speedup": 3.924,
         "baselineIterations": 200000,
         "optimizedIterations": 200000
       }
@@ -27,16 +27,16 @@
       "implementation": "lut",
       "value": "226",
       "runtime": {
-        "baselineMs": 2.684,
-        "optimizedMs": 1.873,
-        "speedup": 1.432,
+        "baselineMs": 3.061,
+        "optimizedMs": 2.336,
+        "speedup": 1.311,
         "baselineIterations": 4000,
         "optimizedIterations": 4000
       },
       "nativeArm64": {
-        "baselineMs": 248.511,
-        "optimizedMs": 231.737,
-        "speedup": 1.072,
+        "baselineMs": 253.561,
+        "optimizedMs": 226.503,
+        "speedup": 1.119,
         "baselineIterations": 300000,
         "optimizedIterations": 300000
       }
@@ -47,16 +47,16 @@
       "implementation": "linear_speculation",
       "value": "0",
       "runtime": {
-        "baselineMs": 191.741,
-        "optimizedMs": 2.522,
-        "speedup": 76.038,
+        "baselineMs": 197.499,
+        "optimizedMs": 2.559,
+        "speedup": 77.171,
         "baselineIterations": 3000,
         "optimizedIterations": 3000
       },
       "nativeArm64": {
-        "baselineMs": 332.408,
-        "optimizedMs": 244.829,
-        "speedup": 1.358,
+        "baselineMs": 314.051,
+        "optimizedMs": 178.554,
+        "speedup": 1.759,
         "baselineIterations": 200000,
         "optimizedIterations": 200000
       }
@@ -67,16 +67,16 @@
       "implementation": "aitken_scalar_tail",
       "value": "100",
       "runtime": {
-        "baselineMs": 41.315,
-        "optimizedMs": 8.697,
-        "speedup": 4.751,
+        "baselineMs": 46.675,
+        "optimizedMs": 8.905,
+        "speedup": 5.242,
         "baselineIterations": 2000,
         "optimizedIterations": 2000
       },
       "nativeArm64": {
-        "baselineMs": 264.894,
-        "optimizedMs": 232.236,
-        "speedup": 1.141,
+        "baselineMs": 446.072,
+        "optimizedMs": 170.515,
+        "speedup": 2.616,
         "baselineIterations": 120000,
         "optimizedIterations": 120000
       }

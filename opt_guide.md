@@ -75,7 +75,7 @@ supports tail calls, the compiler emits WASM `return_call` as a fast path.
 
 ```
 ;; JPL--
-fn f(x : int) : int {
+fun f(x : int) : int {
     ret x * x
     ret rec(res - 1)
     rad res
@@ -197,7 +197,7 @@ constant-folded, pruning the active compute graph.
 
 Example:
 ```
-fn f(x : int) : int {
+fun f(x : int) : int {
     let y = x + 2000000000
     let z = y + 2000000000    // y is in [INT32_MIN+2B, INT32_MAX]
                                // z saturates to INT32_MAX for y > 147483647
@@ -379,7 +379,7 @@ implicit in the function body. A CAS can sometimes solve this equation
 algebraically:
 
 ```
-fn f(x : float, g : float) : float {
+fun f(x : float, g : float) : float {
     ret (g + x / g) / 2.0
     ret rec(x, res)
     rad g - res

@@ -1,0 +1,1920 @@
+{
+  "generatedAt": "2026-03-13T05:17:37.923Z",
+  "targetProbes": [
+    {
+      "target": "go",
+      "available": true
+    },
+    {
+      "target": "cs",
+      "available": false,
+      "error": "Dafny program verifier did not attempt verification\nFailed to compile C# source code using 'dotnet build /var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj -o /var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2'. Command output was:\nWelcome to .NET 8.0!\n---------------------\nSDK Version: 8.0.120\n\n----------------\nInstalled an ASP.NET Core HTTPS development certificate.\nTo trust the certificate, run 'dotnet dev-certs https --trust'\nLearn about HTTPS: https://aka.ms/dotnet-https\n\n----------------\nWrite your first app: https://aka.ms/dotnet-hello-world\nFind out what's new: https://aka.ms/dotnet-whats-new\nExplore documentation: https://aka.ms/dotnet-docs\nReport issues and find source on GitHub: https://github.com/dotnet/core\nUse 'dotnet --help' to see available commands or visit: https://aka.ms/dotnet-cli\n--------------------------------------------------------------------------------------\nMSBuild version 17.8.36+03e28d165 for .NET\n  Determining projects to restore...\n/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj : error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.\n/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj : error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error : Unable to load the service index for source https://api.nuget.org/v3/index.json. [/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj]\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error :   The type initializer for 'System.Net.CookieContainer' threw an exception. [/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj]\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error :   GetDomainName: -1 [/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj]\n\nBuild FAILED.\n\n/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj : error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.\n/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj : error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error : Unable to load the service index for source https://api.nuget.org/v3/index.json. [/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj]\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error :   The type initializer for 'System.Net.CookieContainer' threw an exception. [/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj]\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error :   GetDomainName: -1 [/var/folders/z5/4xclvs3x7w3gccl9590jgyrm0000gn/T/jplmm-examples-dafny-rGgGcB/probe-cs-WMqfn2/probe-cs.csproj]\n    0 Warning(s)\n    3 Error(s)\n\nTime Elapsed 00:00:17.22\nCSSM_ModuleLoad(): One or more parameters passed to a function were not valid."
+    }
+  ],
+  "results": [
+    {
+      "example": "image/01_box_blur_energy.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 165.622,
+        "value": 363
+      },
+      "jplNativeArm64": {
+        "ms": 129.687,
+        "value": 363
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 325.023,
+            "stdout": "134100"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 325.023,
+          "stdout": "134100"
+        }
+      },
+      "nativeVsFastestDafny": 2.506,
+      "wasmVsFastestDafny": 1.962,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/02_edge_emboss_tonemap.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 175.728,
+        "value": 392
+      },
+      "jplNativeArm64": {
+        "ms": 131.51,
+        "value": 392
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 334.668,
+            "stdout": "140580"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 334.668,
+          "stdout": "140580"
+        }
+      },
+      "nativeVsFastestDafny": 2.545,
+      "wasmVsFastestDafny": 1.904,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/03_luma_gradient_mix.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 191.846,
+        "value": 416
+      },
+      "jplNativeArm64": {
+        "ms": 166.335,
+        "value": 416
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 332.482,
+            "stdout": "146880"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 332.482,
+          "stdout": "146880"
+        }
+      },
+      "nativeVsFastestDafny": 1.999,
+      "wasmVsFastestDafny": 1.733,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/04_color_lift_stack.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 170.052,
+        "value": 434
+      },
+      "jplNativeArm64": {
+        "ms": 129.981,
+        "value": 434
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 332.424,
+            "stdout": "151380"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 332.424,
+          "stdout": "151380"
+        }
+      },
+      "nativeVsFastestDafny": 2.557,
+      "wasmVsFastestDafny": 1.955,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/05_detail_boost_grid.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 167.714,
+        "value": 465
+      },
+      "jplNativeArm64": {
+        "ms": 129.85,
+        "value": 465
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 340.928,
+            "stdout": "161460"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 340.928,
+          "stdout": "161460"
+        }
+      },
+      "nativeVsFastestDafny": 2.626,
+      "wasmVsFastestDafny": 2.033,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/06_highlight_balance_pass.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 188.462,
+        "value": 438
+      },
+      "jplNativeArm64": {
+        "ms": 147.401,
+        "value": 438
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 327.786,
+            "stdout": "149760"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 327.786,
+          "stdout": "149760"
+        }
+      },
+      "nativeVsFastestDafny": 2.224,
+      "wasmVsFastestDafny": 1.739,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/07_channel_push_field.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 168.007,
+        "value": 470
+      },
+      "jplNativeArm64": {
+        "ms": 128.8,
+        "value": 470
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 334.628,
+            "stdout": "156960"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 334.628,
+          "stdout": "156960"
+        }
+      },
+      "nativeVsFastestDafny": 2.598,
+      "wasmVsFastestDafny": 1.992,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/08_edge_heatmap_builder.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 175.629,
+        "value": 489
+      },
+      "jplNativeArm64": {
+        "ms": 135.045,
+        "value": 489
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 335.3,
+            "stdout": "163260"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 335.3,
+          "stdout": "163260"
+        }
+      },
+      "nativeVsFastestDafny": 2.483,
+      "wasmVsFastestDafny": 1.909,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/09_soft_focus_pipeline.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 169.422,
+        "value": 523
+      },
+      "jplNativeArm64": {
+        "ms": 133.241,
+        "value": 523
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 334.52,
+            "stdout": "173520"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 334.52,
+          "stdout": "173520"
+        }
+      },
+      "nativeVsFastestDafny": 2.511,
+      "wasmVsFastestDafny": 1.974,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/10_contrast_ramp_blend.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 164.31,
+        "value": 538
+      },
+      "jplNativeArm64": {
+        "ms": 130.195,
+        "value": 538
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 334.092,
+            "stdout": "176400"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 334.092,
+          "stdout": "176400"
+        }
+      },
+      "nativeVsFastestDafny": 2.566,
+      "wasmVsFastestDafny": 2.033,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/11_spectral_tint_pass.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 165.81,
+        "value": 519
+      },
+      "jplNativeArm64": {
+        "ms": 130.569,
+        "value": 519
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 332.923,
+            "stdout": "167220"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 332.923,
+          "stdout": "167220"
+        }
+      },
+      "nativeVsFastestDafny": 2.55,
+      "wasmVsFastestDafny": 2.008,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/12_embossed_luma_stack.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 167.406,
+        "value": 548
+      },
+      "jplNativeArm64": {
+        "ms": 131.434,
+        "value": 548
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 333.778,
+            "stdout": "175860"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 333.778,
+          "stdout": "175860"
+        }
+      },
+      "nativeVsFastestDafny": 2.54,
+      "wasmVsFastestDafny": 1.994,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/13_motion_hint_filter.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 167.997,
+        "value": 579
+      },
+      "jplNativeArm64": {
+        "ms": 129.588,
+        "value": 579
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 334.334,
+            "stdout": "186120"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 334.334,
+          "stdout": "186120"
+        }
+      },
+      "nativeVsFastestDafny": 2.58,
+      "wasmVsFastestDafny": 1.99,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/14_vivid_mix_painter.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 165.631,
+        "value": 599
+      },
+      "jplNativeArm64": {
+        "ms": 130.566,
+        "value": 599
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 330.679,
+            "stdout": "188820"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 330.679,
+          "stdout": "188820"
+        }
+      },
+      "nativeVsFastestDafny": 2.533,
+      "wasmVsFastestDafny": 1.996,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/15_row_energy_sampler.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 169.02,
+        "value": 613
+      },
+      "jplNativeArm64": {
+        "ms": 130.365,
+        "value": 613
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 332.75,
+            "stdout": "192420"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 332.75,
+          "stdout": "192420"
+        }
+      },
+      "nativeVsFastestDafny": 2.552,
+      "wasmVsFastestDafny": 1.969,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/16_column_energy_sampler.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 170.313,
+        "value": 596
+      },
+      "jplNativeArm64": {
+        "ms": 132.144,
+        "value": 596
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 333.272,
+            "stdout": "183780"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 333.272,
+          "stdout": "183780"
+        }
+      },
+      "nativeVsFastestDafny": 2.522,
+      "wasmVsFastestDafny": 1.957,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/17_stylized_screen_pass.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 169.933,
+        "value": 637
+      },
+      "jplNativeArm64": {
+        "ms": 128.409,
+        "value": 637
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 323.913,
+            "stdout": "197460"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 323.913,
+          "stdout": "197460"
+        }
+      },
+      "nativeVsFastestDafny": 2.523,
+      "wasmVsFastestDafny": 1.906,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/18_sharpened_edge_stack.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 167.641,
+        "value": 655
+      },
+      "jplNativeArm64": {
+        "ms": 128.221,
+        "value": 655
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 330.889,
+            "stdout": "201240"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 330.889,
+          "stdout": "201240"
+        }
+      },
+      "nativeVsFastestDafny": 2.581,
+      "wasmVsFastestDafny": 1.974,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/19_cinematic_grade_pass.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 177.076,
+        "value": 676
+      },
+      "jplNativeArm64": {
+        "ms": 130.001,
+        "value": 676
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 350.019,
+            "stdout": "206280"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 350.019,
+          "stdout": "206280"
+        }
+      },
+      "nativeVsFastestDafny": 2.692,
+      "wasmVsFastestDafny": 1.977,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/20_halo_reducer_pass.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 224.147,
+        "value": 692
+      },
+      "jplNativeArm64": {
+        "ms": 161.913,
+        "value": 692
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 328.085,
+            "stdout": "210060"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 328.085,
+          "stdout": "210060"
+        }
+      },
+      "nativeVsFastestDafny": 2.026,
+      "wasmVsFastestDafny": 1.464,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/21_detail_smoother_pass.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 164.712,
+        "value": 686
+      },
+      "jplNativeArm64": {
+        "ms": 136.683,
+        "value": 686
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 366.025,
+            "stdout": "206100"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 366.025,
+          "stdout": "206100"
+        }
+      },
+      "nativeVsFastestDafny": 2.678,
+      "wasmVsFastestDafny": 2.222,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/22_pixel_fusion_pass.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 170.851,
+        "value": 709
+      },
+      "jplNativeArm64": {
+        "ms": 139.86,
+        "value": 709
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 363.825,
+            "stdout": "212040"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 363.825,
+          "stdout": "212040"
+        }
+      },
+      "nativeVsFastestDafny": 2.601,
+      "wasmVsFastestDafny": 2.129,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/23_color_balance_stack.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 189.084,
+        "value": 733
+      },
+      "jplNativeArm64": {
+        "ms": 179.92,
+        "value": 733
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 362.268,
+            "stdout": "218160"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 362.268,
+          "stdout": "218160"
+        }
+      },
+      "nativeVsFastestDafny": 2.013,
+      "wasmVsFastestDafny": 1.916,
+      "fastestOverall": "JPL native arm64"
+    },
+    {
+      "example": "image/24_microcontrast_stage.jplmm",
+      "category": "image",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 180,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 176.482,
+        "value": 756
+      },
+      "jplNativeArm64": {
+        "ms": 198.025,
+        "value": 756
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 340.878,
+            "stdout": "223740"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 340.878,
+          "stdout": "223740"
+        }
+      },
+      "nativeVsFastestDafny": 1.721,
+      "wasmVsFastestDafny": 1.932,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/01_vision_block_metrics.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 3.277,
+        "value": 847
+      },
+      "jplNativeArm64": {
+        "ms": 3.93,
+        "value": 847
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 313.457,
+            "stdout": "192600"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 313.457,
+          "stdout": "192600"
+        }
+      },
+      "nativeVsFastestDafny": 79.767,
+      "wasmVsFastestDafny": 95.651,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/02_stylized_block_profile.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 3.33,
+        "value": 795
+      },
+      "jplNativeArm64": {
+        "ms": 4.189,
+        "value": 795
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 313.597,
+            "stdout": "180000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 313.597,
+          "stdout": "180000"
+        }
+      },
+      "nativeVsFastestDafny": 74.86,
+      "wasmVsFastestDafny": 94.177,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/03_ranked_luma_tiles.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 3.56,
+        "value": 761
+      },
+      "jplNativeArm64": {
+        "ms": 4.378,
+        "value": 761
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 314.672,
+            "stdout": "174120"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 314.672,
+          "stdout": "174120"
+        }
+      },
+      "nativeVsFastestDafny": 71.87,
+      "wasmVsFastestDafny": 88.383,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/04_sorted_detail_profile.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 3.414,
+        "value": 745
+      },
+      "jplNativeArm64": {
+        "ms": 3.592,
+        "value": 745
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 311.285,
+            "stdout": "170640"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 311.285,
+          "stdout": "170640"
+        }
+      },
+      "nativeVsFastestDafny": 86.651,
+      "wasmVsFastestDafny": 91.169,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/05_metric_screen_builder.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 3.722,
+        "value": 738
+      },
+      "jplNativeArm64": {
+        "ms": 5.941,
+        "value": 738
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 338.491,
+            "stdout": "167400"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 338.491,
+          "stdout": "167400"
+        }
+      },
+      "nativeVsFastestDafny": 56.973,
+      "wasmVsFastestDafny": 90.954,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/06_feature_tile_ranker.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 3.456,
+        "value": 847
+      },
+      "jplNativeArm64": {
+        "ms": 4.451,
+        "value": 847
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 311.391,
+            "stdout": "192600"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 311.391,
+          "stdout": "192600"
+        }
+      },
+      "nativeVsFastestDafny": 69.954,
+      "wasmVsFastestDafny": 90.09,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/07_block_energy_mosaic.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 3.688,
+        "value": 795
+      },
+      "jplNativeArm64": {
+        "ms": 4.31,
+        "value": 795
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 313.384,
+            "stdout": "180000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 313.384,
+          "stdout": "180000"
+        }
+      },
+      "nativeVsFastestDafny": 72.707,
+      "wasmVsFastestDafny": 84.97,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/08_sorted_pixel_signature.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.239,
+        "value": 761
+      },
+      "jplNativeArm64": {
+        "ms": 3.95,
+        "value": 761
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 318.094,
+            "stdout": "174120"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 318.094,
+          "stdout": "174120"
+        }
+      },
+      "nativeVsFastestDafny": 80.527,
+      "wasmVsFastestDafny": 256.821,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/09_luma_band_ranker.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.216,
+        "value": 745
+      },
+      "jplNativeArm64": {
+        "ms": 4.134,
+        "value": 745
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 314.535,
+            "stdout": "170640"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 314.535,
+          "stdout": "170640"
+        }
+      },
+      "nativeVsFastestDafny": 76.093,
+      "wasmVsFastestDafny": 258.717,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/10_screen_profile_field.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.538,
+        "value": 738
+      },
+      "jplNativeArm64": {
+        "ms": 4.199,
+        "value": 738
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 357.874,
+            "stdout": "167400"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 357.874,
+          "stdout": "167400"
+        }
+      },
+      "nativeVsFastestDafny": 85.222,
+      "wasmVsFastestDafny": 232.751,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/11_detail_metric_tiles.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.55,
+        "value": 847
+      },
+      "jplNativeArm64": {
+        "ms": 4.9,
+        "value": 847
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 318.799,
+            "stdout": "192600"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 318.799,
+          "stdout": "192600"
+        }
+      },
+      "nativeVsFastestDafny": 65.058,
+      "wasmVsFastestDafny": 205.622,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "showcase/12_profiled_block_stack.jplmm",
+      "category": "showcase",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 120,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.357,
+        "value": 795
+      },
+      "jplNativeArm64": {
+        "ms": 5.142,
+        "value": 795
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 320.428,
+            "stdout": "180000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 320.428,
+          "stdout": "180000"
+        }
+      },
+      "nativeVsFastestDafny": 62.313,
+      "wasmVsFastestDafny": 236.152,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/01_median_block_stack.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.045,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 35.179,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 304.122,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 304.122,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 8.645,
+      "wasmVsFastestDafny": 291.153,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/02_row_sort_network.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.777,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.112,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 369.004,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 369.004,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 89.736,
+      "wasmVsFastestDafny": 207.7,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/03_column_rank_pass.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 0.853,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 4.051,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 301.59,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 301.59,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 74.449,
+      "wasmVsFastestDafny": 353.409,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/04_tile_median_builder.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.868,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.495,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 296.264,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 296.264,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 65.907,
+      "wasmVsFastestDafny": 158.617,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/05_histogram_hint_sort.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 0.827,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 4.68,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 292.529,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 292.529,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 62.503,
+      "wasmVsFastestDafny": 353.669,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/06_ranked_window_pass.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.768,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.135,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 310.326,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 310.326,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 75.042,
+      "wasmVsFastestDafny": 175.569,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/07_top_band_stack.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.001,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 3.782,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 297.314,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 297.314,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 78.604,
+      "wasmVsFastestDafny": 297.128,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/08_quartile_block_sort.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.808,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.008,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 305.934,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 305.934,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 76.338,
+      "wasmVsFastestDafny": 169.211,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/09_edge_bucket_sort.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 0.819,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 3.632,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 298.309,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 298.309,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 82.129,
+      "wasmVsFastestDafny": 364.44,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/10_median_profile_stack.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.831,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 3.938,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 346.33,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 346.33,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 87.948,
+      "wasmVsFastestDafny": 189.101,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/11_window_rank_energy.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 0.896,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 3.603,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 298.656,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 298.656,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 82.889,
+      "wasmVsFastestDafny": 333.322,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/12_neighbor_band_sort.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 2.463,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.261,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 536.366,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 536.366,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 125.889,
+      "wasmVsFastestDafny": 217.755,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/13_median_trace_pass.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 0.884,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 4.037,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 306.95,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 306.95,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 76.043,
+      "wasmVsFastestDafny": 347.048,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/14_block_order_stack.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 2.048,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.641,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 306.168,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 306.168,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 65.966,
+      "wasmVsFastestDafny": 149.499,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/15_ranked_tile_stage.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.117,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 4.32,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 331.584,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 331.584,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 76.761,
+      "wasmVsFastestDafny": 296.797,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/16_adaptive_sort_pass.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 2.855,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.099,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 300.317,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 300.317,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 73.271,
+      "wasmVsFastestDafny": 105.207,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/17_contrast_bucket_sort.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.21,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 3.6,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 307.531,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 307.531,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 85.424,
+      "wasmVsFastestDafny": 254.097,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/18_midband_sort_stage.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.782,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.964,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 337.768,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 337.768,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 68.049,
+      "wasmVsFastestDafny": 189.558,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/19_ordered_block_field.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 0.841,
+        "value": 144
+      },
+      "jplNativeArm64": {
+        "ms": 4.304,
+        "value": 144
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 299.839,
+            "stdout": "54000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 299.839,
+          "stdout": "54000"
+        }
+      },
+      "nativeVsFastestDafny": 69.658,
+      "wasmVsFastestDafny": 356.386,
+      "fastestOverall": "JPL wasm"
+    },
+    {
+      "example": "sort/20_tile_quantile_stack.jplmm",
+      "category": "sort",
+      "comparisonClass": "exact",
+      "comparisonNote": "JPL and Dafny use the same integer-oriented algorithm family here.",
+      "iterations": 250,
+      "jplImplementation": "none",
+      "jplWasm": {
+        "ms": 1.73,
+        "value": 96
+      },
+      "jplNativeArm64": {
+        "ms": 4.338,
+        "value": 96
+      },
+      "dafny": {
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "ms": 310.807,
+            "stdout": "63000"
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 310.807,
+          "stdout": "63000"
+        }
+      },
+      "nativeVsFastestDafny": 71.647,
+      "wasmVsFastestDafny": 179.657,
+      "fastestOverall": "JPL wasm"
+    }
+  ]
+}

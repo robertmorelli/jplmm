@@ -1,49 +1,83 @@
 import { FLOAT_T, INT_T, VOID_T } from "./types";
 export function buildIR(program, typeMap) {
     const fnSigs = collectFnSigs(program);
+    const structDefs = collectStructDefs(program);
     const functions = [];
     const globals = [];
+    const structs = [];
     const globalEnv = new Map();
     for (const cmd of program.commands) {
-        if (cmd.tag === "fn_def") {
-            functions.push(lowerFunction(cmd, fnSigs, typeMap));
+        const structDef = unwrapTimedDefinition(cmd, "struct_def");
+        if (structDef) {
+            structs.push({
+                name: structDef.name,
+                fields: structDef.fields,
+                id: structDef.id,
+            });
+            continue;
+        }
+        const fnDef = unwrapTimedDefinition(cmd, "fn_def");
+        if (fnDef) {
+            functions.push(lowerFunction(fnDef, fnSigs, structDefs, typeMap));
             continue;
         }
         if (cmd.tag === "let_cmd") {
-            if (cmd.lvalue.tag !== "var") {
-                continue;
-            }
-            const lowered = lowerExpr(cmd.expr, {
+            const lowered = lowerLetBinding(cmd.lvalue, cmd.expr, {
                 env: globalEnv,
                 fnRetType: VOID_T,
                 fnSigs,
+                structDefs,
                 typeMap,
-            }, false);
-            globalEnv.set(cmd.lvalue.name, lowered.resultType);
+            });
+            if (!lowered) {
+                continue;
+            }
+            globalEnv.set(lowered.name, lowered.expr.resultType);
             globals.push({
                 tag: "let_cmd",
-                name: cmd.lvalue.name,
-                expr: lowered,
+                name: lowered.name,
+                expr: lowered.expr,
                 id: cmd.id,
             });
         }
     }
-    return { functions, globals };
+    return { structs, functions, globals };
 }
 function collectFnSigs(program) {
     const out = new Map();
     for (const cmd of program.commands) {
-        if (cmd.tag !== "fn_def") {
+        const fnDef = unwrapTimedDefinition(cmd, "fn_def");
+        if (!fnDef) {
             continue;
         }
-        out.set(cmd.name, {
-            params: cmd.params.map((p) => p.type),
-            ret: cmd.retType,
+        out.set(fnDef.name, {
+            params: fnDef.params.map((p) => p.type),
+            ret: fnDef.retType,
         });
     }
     return out;
 }
-function lowerFunction(cmd, fnSigs, typeMap) {
+function collectStructDefs(program) {
+    const out = new Map();
+    for (const cmd of program.commands) {
+        const structDef = unwrapTimedDefinition(cmd, "struct_def");
+        if (!structDef) {
+            continue;
+        }
+        out.set(structDef.name, structDef);
+    }
+    return out;
+}
+function unwrapTimedDefinition(cmd, tag) {
+    if (cmd.tag === tag) {
+        return cmd;
+    }
+    if (cmd.tag === "time" && cmd.cmd.tag === tag) {
+        return cmd.cmd;
+    }
+    return null;
+}
+function lowerFunction(cmd, fnSigs, structDefs, typeMap) {
     const env = new Map();
     for (const p of cmd.params) {
         env.set(p.name, p.type);
@@ -52,6 +86,7 @@ function lowerFunction(cmd, fnSigs, typeMap) {
         env,
         fnRetType: cmd.retType,
         fnSigs,
+        structDefs,
         typeMap,
     };
     const body = cmd.body
@@ -59,6 +94,7 @@ function lowerFunction(cmd, fnSigs, typeMap) {
         .filter((s) => s !== null);
     return {
         name: cmd.name,
+        keyword: cmd.keyword,
         params: cmd.params,
         retType: cmd.retType,
         body,
@@ -67,12 +103,12 @@ function lowerFunction(cmd, fnSigs, typeMap) {
 }
 function lowerStmt(stmt, ctx) {
     if (stmt.tag === "let") {
-        if (stmt.lvalue.tag !== "var") {
+        const lowered = lowerLetBinding(stmt.lvalue, stmt.expr, ctx);
+        if (!lowered) {
             return null;
         }
-        const expr = lowerExpr(stmt.expr, ctx, false);
-        ctx.env.set(stmt.lvalue.name, expr.resultType);
-        return { tag: "let", name: stmt.lvalue.name, expr, id: stmt.id };
+        ctx.env.set(lowered.name, lowered.expr.resultType);
+        return { tag: "let", name: lowered.name, expr: lowered.expr, id: stmt.id };
     }
     if (stmt.tag === "ret") {
         return { tag: "ret", expr: lowerExpr(stmt.expr, ctx, true), id: stmt.id };
@@ -82,6 +118,43 @@ function lowerStmt(stmt, ctx) {
     }
     if (stmt.tag === "gas") {
         return { tag: "gas", limit: stmt.limit, id: stmt.id };
+    }
+    return null;
+}
+function lowerLetBinding(lvalue, expr, ctx) {
+    if (lvalue.tag === "var") {
+        return {
+            name: lvalue.name,
+            expr: lowerExpr(expr, ctx, false),
+        };
+    }
+    if (lvalue.tag === "field") {
+        const baseType = ctx.env.get(lvalue.base);
+        if (!baseType || baseType.tag !== "named") {
+            return null;
+        }
+        const structDef = ctx.structDefs.get(baseType.name);
+        if (!structDef) {
+            return null;
+        }
+        const replacement = lowerExpr(expr, ctx, false);
+        return {
+            name: lvalue.base,
+            expr: {
+                tag: "struct_cons",
+                name: structDef.name,
+                fields: structDef.fields.map((field) => field.name === lvalue.field
+                    ? replacement
+                    : lowerExpr({
+                        tag: "field",
+                        target: { tag: "var", name: lvalue.base, id: -1 },
+                        field: field.name,
+                        id: -1,
+                    }, ctx, false)),
+                id: -1,
+                resultType: { tag: "named", name: structDef.name },
+            },
+        };
     }
     return null;
 }
@@ -210,11 +283,8 @@ function lowerExpr(expr, ctx, isTailPosition) {
         }
         case "array_expr":
         case "sum_expr": {
-            const bindings = expr.bindings.map((b) => ({
-                name: b.name,
-                expr: lowerExpr(b.expr, ctx, false),
-            }));
-            const body = lowerExpr(expr.body, ctx, false);
+            const bindings = lowerBindings(expr.bindings, ctx);
+            const body = withScopedBindings(bindings, ctx, () => lowerExpr(expr.body, ctx, false));
             return {
                 tag: expr.tag,
                 bindings,
@@ -226,6 +296,34 @@ function lowerExpr(expr, ctx, isTailPosition) {
         default: {
             const _never = expr;
             return _never;
+        }
+    }
+}
+function lowerBindings(bindings, ctx) {
+    const lowered = [];
+    for (const binding of bindings) {
+        const expr = lowerExpr(binding.expr, ctx, false);
+        lowered.push({
+            name: binding.name,
+            expr,
+        });
+        ctx.env.set(binding.name, INT_T);
+    }
+    for (let i = bindings.length - 1; i >= 0; i -= 1) {
+        ctx.env.delete(bindings[i].name);
+    }
+    return lowered;
+}
+function withScopedBindings(bindings, ctx, f) {
+    for (const binding of bindings) {
+        ctx.env.set(binding.name, INT_T);
+    }
+    try {
+        return f();
+    }
+    finally {
+        for (let i = bindings.length - 1; i >= 0; i -= 1) {
+            ctx.env.delete(bindings[i].name);
         }
     }
 }

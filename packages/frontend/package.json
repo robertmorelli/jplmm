@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
   "dependencies": {
     "@jplmm/ast": "file:../ast",
-    "@jplmm/grammar": "file:../grammar"
+    "@jplmm/grammar": "file:../grammar",
+    "@jplmm/proof": "file:../proof"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

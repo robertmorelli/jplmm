@@ -51,43 +51,59 @@ class Parser {
   }
 
   private parseCmd(): Cmd | null {
-    if (this.acceptKeyword("fn")) {
-      return this.parseFnDef();
+    const throwsErrorToken = this.acceptKeywordToken("throwserror");
+    if (throwsErrorToken) {
+      return this.parseThrowsErrorCmd(throwsErrorToken);
     }
-    if (this.acceptKeyword("let")) {
-      return this.parseLetCmd();
+    const funToken =
+      this.acceptKeywordToken("fun")
+      ?? this.acceptKeywordToken("def")
+      ?? this.acceptKeywordToken("ref")
+      ?? this.acceptKeywordToken("fn");
+    if (funToken) {
+      return this.parseFnDef(funToken);
     }
-    if (this.acceptKeyword("struct")) {
-      return this.parseStructDef();
+    const letToken = this.acceptKeywordToken("let");
+    if (letToken) {
+      return this.parseLetCmd(letToken);
     }
-    if (this.acceptKeyword("read")) {
-      return this.parseReadImageCmd();
+    const structToken = this.acceptKeywordToken("struct");
+    if (structToken) {
+      return this.parseStructDef(structToken);
     }
-    if (this.acceptKeyword("write")) {
-      return this.parseWriteImageCmd();
+    const readToken = this.acceptKeywordToken("read");
+    if (readToken) {
+      return this.parseReadImageCmd(readToken);
     }
-    if (this.acceptKeyword("print")) {
-      return this.parsePrintCmd();
+    const writeToken = this.acceptKeywordToken("write");
+    if (writeToken) {
+      return this.parseWriteImageCmd(writeToken);
     }
-    if (this.acceptKeyword("show")) {
-      return this.parseShowCmd();
+    const printToken = this.acceptKeywordToken("print");
+    if (printToken) {
+      return this.parsePrintCmd(printToken);
     }
-    if (this.acceptKeyword("time")) {
-      return this.parseTimeCmd();
+    const showToken = this.acceptWordToken("out") ?? this.acceptKeywordToken("show");
+    if (showToken) {
+      return this.parseShowCmd(showToken);
+    }
+    const timeToken = this.acceptKeywordToken("time");
+    if (timeToken) {
+      return this.parseTimeCmd(timeToken);
     }
     return null;
   }
 
-  private parseFnDef(): Cmd {
-    const name = this.expectIdent("Expected function name after 'fn'");
+  private parseFnDef(startToken: Token): Cmd {
+    const nameToken = this.expectIdentToken("Expected function name after 'fun'");
     this.expectSymbol("(", "Expected '(' after function name");
     const params: Param[] = [];
     if (!this.acceptSymbol(")")) {
       do {
-        const paramName = this.expectIdent("Expected parameter name");
+        const paramName = this.expectIdentToken("Expected parameter name");
         this.expectSymbol(":", "Expected ':' after parameter name");
         const paramType = this.parseType();
-        params.push({ name: paramName, type: paramType });
+        params.push(this.withSpan({ name: paramName.text, type: paramType }, paramName.start, this.nodeEnd(paramType)));
       } while (this.acceptSymbol(","));
       this.expectSymbol(")", "Expected ')' after parameter list");
     }
@@ -105,93 +121,128 @@ class Parser {
       this.acceptSymbol(";");
     }
 
-    return {
+    return this.withSpan({
       tag: "fn_def",
-      name,
+      keyword: startToken.text as import("@jplmm/ast").FunctionKeyword,
+      name: nameToken.text,
       params,
       retType,
       body,
       id: this.newId(),
-    };
+    }, startToken.start, this.lastEnd());
   }
 
-  private parseStructDef(): Cmd {
-    const name = this.expectIdent("Expected struct name after 'struct'");
+  private parseStructDef(startToken: Token): Cmd {
+    const nameToken = this.expectIdentToken("Expected struct name after 'struct'");
     this.expectSymbol("{", "Expected '{' after struct name");
     const fields: StructField[] = [];
     while (!this.acceptSymbol("}") && !this.isEof()) {
-      const fieldName = this.expectIdent("Expected struct field name");
+      const fieldName = this.expectIdentToken("Expected struct field name");
       this.expectSymbol(":", "Expected ':' after struct field name");
-      fields.push({ name: fieldName, type: this.parseType() });
+      const fieldType = this.parseType();
+      fields.push(this.withSpan({ name: fieldName.text, type: fieldType }, fieldName.start, this.nodeEnd(fieldType)));
       if (!this.acceptSymbol(",")) {
         this.acceptSymbol(";");
       }
     }
-    return { tag: "struct_def", name, fields, id: this.newId() };
+    return this.withSpan({ tag: "struct_def", name: nameToken.text, fields, id: this.newId() }, startToken.start, this.lastEnd());
   }
 
-  private parseLetCmd(): Cmd {
+  private parseLetCmd(startToken: Token): Cmd {
     const lvalue = this.parseLValue();
     this.expectSymbol("=", "Expected '=' in top-level let command");
     const expr = this.parseExpr();
-    return { tag: "let_cmd", lvalue, expr, id: this.newId() };
+    return this.withSpan({ tag: "let_cmd", lvalue, expr, id: this.newId() }, startToken.start, this.nodeEnd(expr));
   }
 
-  private parseReadImageCmd(): Cmd {
+  private parseReadImageCmd(startToken: Token): Cmd {
     this.expectKeyword("image", "Expected 'image' after 'read'");
-    const filename = this.expectString("Expected string literal after 'read image'");
+    const filename = this.expectStringToken("Expected string literal after 'read image'");
     this.expectKeyword("to", "Expected 'to' after image filename");
     const target = this.parseArgument();
-    return { tag: "read_image", filename, target, id: this.newId() };
+    return this.withSpan(
+      { tag: "read_image", filename: filename.text, target, id: this.newId() },
+      startToken.start,
+      this.nodeEnd(target),
+    );
   }
 
-  private parseWriteImageCmd(): Cmd {
+  private parseWriteImageCmd(startToken: Token): Cmd {
     this.expectKeyword("image", "Expected 'image' after 'write'");
     const expr = this.parseExpr();
     this.expectKeyword("to", "Expected 'to' after image expression");
-    const filename = this.expectString("Expected string literal after 'to'");
-    return { tag: "write_image", expr, filename, id: this.newId() };
+    const filename = this.expectStringToken("Expected string literal after 'to'");
+    return this.withSpan(
+      { tag: "write_image", expr, filename: filename.text, id: this.newId() },
+      startToken.start,
+      filename.end,
+    );
   }
 
-  private parsePrintCmd(): Cmd {
-    const message = this.expectString("Expected string literal after 'print'");
-    return { tag: "print", message, id: this.newId() };
+  private parsePrintCmd(startToken: Token): Cmd {
+    const message = this.expectStringToken("Expected string literal after 'print'");
+    return this.withSpan({ tag: "print", message: message.text, id: this.newId() }, startToken.start, message.end);
   }
 
-  private parseShowCmd(): Cmd {
+  private parseShowCmd(startToken: Token): Cmd {
     const expr = this.parseExpr();
-    return { tag: "show", expr, id: this.newId() };
+    return this.withSpan({ tag: "show", expr, id: this.newId() }, startToken.start, this.nodeEnd(expr));
   }
 
-  private parseTimeCmd(): Cmd {
+  private parseTimeCmd(startToken: Token): Cmd {
     const cmd = this.parseCmd();
     if (!cmd) {
       const t = this.peek();
       this.diagnostics.push(error("Expected a command after 'time'", t.start, t.end));
-      return { tag: "print", message: "", id: this.newId() };
+      return this.withSpan({ tag: "print", message: "", id: this.newId() }, startToken.start, t.end);
     }
-    return { tag: "time", cmd, id: this.newId() };
+    return this.withSpan({ tag: "time", cmd, id: this.newId() }, startToken.start, this.nodeEnd(cmd));
+  }
+
+  private parseThrowsErrorCmd(annotation: Token): Cmd {
+    this.diagnostics.push(
+      error("'throwserror' is unsatisfiable in JPL--: verified functions cannot throw runtime errors", annotation.start, annotation.end, "THROWS_ERROR_IMPOSSIBLE"),
+    );
+
+    const cmd = this.parseCmd();
+    if (!cmd) {
+      const t = this.peek();
+      this.diagnostics.push(error("Expected a function definition after 'throwserror'", t.start, t.end, "THROWS_ERROR_TARGET"));
+      return this.withSpan({ tag: "print", message: "", id: this.newId() }, annotation.start, t.end);
+    }
+
+    if (cmd.tag !== "fn_def" && !(cmd.tag === "time" && cmd.cmd.tag === "fn_def")) {
+      this.diagnostics.push(
+        error("'throwserror' can only annotate a function definition", annotation.start, annotation.end, "THROWS_ERROR_TARGET"),
+      );
+    }
+
+    return cmd;
   }
 
   private parseStmt(): Stmt | null {
-    if (this.acceptKeyword("let")) {
+    const letToken = this.acceptKeywordToken("let");
+    if (letToken) {
       const lvalue = this.parseLValue();
       this.expectSymbol("=", "Expected '=' in let statement");
       const expr = this.parseExpr();
-      return { tag: "let", lvalue, expr, id: this.newId() };
+      return this.withSpan({ tag: "let", lvalue, expr, id: this.newId() }, letToken.start, this.nodeEnd(expr));
     }
 
-    if (this.acceptKeyword("ret")) {
+    const retToken = this.acceptKeywordToken("ret");
+    if (retToken) {
       const expr = this.parseExpr();
-      return { tag: "ret", expr, id: this.newId() };
+      return this.withSpan({ tag: "ret", expr, id: this.newId() }, retToken.start, this.nodeEnd(expr));
     }
 
-    if (this.acceptKeyword("rad")) {
+    const radToken = this.acceptKeywordToken("rad");
+    if (radToken) {
       const expr = this.parseExpr();
-      return { tag: "rad", expr, id: this.newId() };
+      return this.withSpan({ tag: "rad", expr, id: this.newId() }, radToken.start, this.nodeEnd(expr));
     }
 
-    if (this.acceptKeyword("gas")) {
+    const gasToken = this.acceptKeywordToken("gas");
+    if (gasToken) {
       const t = this.peek();
       let limit: GasLimit;
       if (this.acceptKeyword("inf")) {
@@ -204,7 +255,7 @@ class Parser {
         this.advance();
         return null;
       }
-      return { tag: "gas", limit, id: this.newId() };
+      return this.withSpan({ tag: "gas", limit, id: this.newId() }, gasToken.start, this.lastEnd());
     }
 
     const t = this.peek();
@@ -216,19 +267,26 @@ class Parser {
   private parseType(): Type {
     const t = this.peek();
     let base: Type;
-    if (this.acceptKeyword("int")) {
-      base = { tag: "int" };
-    } else if (this.acceptKeyword("float")) {
-      base = { tag: "float" };
-    } else if (this.acceptKeyword("void")) {
-      base = { tag: "void" };
-    } else if (t.kind === "ident") {
-      this.advance();
-      base = { tag: "named", name: t.text };
+    const intToken = this.acceptKeywordToken("int");
+    if (intToken) {
+      base = this.withSpan({ tag: "int" }, intToken.start, intToken.end);
     } else {
-      this.diagnostics.push(error("Expected a type", t.start, t.end));
-      this.advance();
-      return { tag: "void" };
+      const floatToken = this.acceptKeywordToken("float");
+      if (floatToken) {
+        base = this.withSpan({ tag: "float" }, floatToken.start, floatToken.end);
+      } else {
+        const voidToken = this.acceptKeywordToken("void");
+        if (voidToken) {
+          base = this.withSpan({ tag: "void" }, voidToken.start, voidToken.end);
+        } else if (t.kind === "ident") {
+          this.advance();
+          base = this.withSpan({ tag: "named", name: t.text }, t.start, t.end);
+        } else {
+          this.diagnostics.push(error("Expected a type", t.start, t.end));
+          this.advance();
+          return this.withSpan({ tag: "void" }, t.start, t.end);
+        }
+      }
     }
 
     let dims = 0;
@@ -237,13 +295,14 @@ class Parser {
       dims += 1;
     }
     if (dims > 0) {
-      return { tag: "array", element: base, dims };
+      return this.withSpan({ tag: "array", element: base, dims }, this.nodeStart(base), this.lastEnd());
     }
     return base;
   }
 
   private parseLValue(): LValue {
-    if (this.acceptSymbol("(")) {
+    const openParen = this.acceptSymbolToken("(");
+    if (openParen) {
       const items: LValue[] = [];
       if (!this.acceptSymbol(")")) {
         do {
@@ -251,13 +310,13 @@ class Parser {
         } while (this.acceptSymbol(","));
         this.expectSymbol(")", "Expected ')' after tuple lvalue");
       }
-      return { tag: "tuple", items };
+      return this.withSpan({ tag: "tuple", items }, openParen.start, this.lastEnd());
     }
 
-    const name = this.expectIdent("Expected variable name");
+    const name = this.expectIdentToken("Expected variable name");
     if (this.acceptSymbol(".")) {
-      const field = this.expectIdent("Expected field name after '.'");
-      return { tag: "field", base: name, field };
+      const field = this.expectIdentToken("Expected field name after '.'");
+      return this.withSpan({ tag: "field", base: name.text, field: field.text }, name.start, field.end);
     }
     if (this.acceptSymbol("[")) {
       const bracket = this.tokens[this.idx - 1]!;
@@ -270,9 +329,9 @@ class Parser {
           "IMMUTABLE_LVALUE",
         ),
       );
-      return { tag: "var", name };
+      return this.withSpan({ tag: "var", name: name.text }, name.start, name.end);
     }
-    return { tag: "var", name };
+    return this.withSpan({ tag: "var", name: name.text }, name.start, name.end);
   }
 
   private consumeIndexSuffix(): void {
@@ -291,7 +350,8 @@ class Parser {
   }
 
   private parseArgument(): Argument {
-    if (this.acceptSymbol("(")) {
+    const openParen = this.acceptSymbolToken("(");
+    if (openParen) {
       const items: Argument[] = [];
       if (!this.acceptSymbol(")")) {
         do {
@@ -299,10 +359,10 @@ class Parser {
         } while (this.acceptSymbol(","));
         this.expectSymbol(")", "Expected ')' after tuple argument");
       }
-      return { tag: "tuple", items };
+      return this.withSpan({ tag: "tuple", items }, openParen.start, this.lastEnd());
     }
-    const name = this.expectIdent("Expected variable name");
-    return { tag: "var", name };
+    const name = this.expectIdentToken("Expected variable name");
+    return this.withSpan({ tag: "var", name: name.text }, name.start, name.end);
   }
 
   private parseExpr(): Expr {
@@ -313,9 +373,19 @@ class Parser {
     let expr = this.parseMulDiv();
     while (true) {
       if (this.acceptSymbol("+")) {
-        expr = { tag: "binop", op: "+", left: expr, right: this.parseMulDiv(), id: this.newId() };
+        const right = this.parseMulDiv();
+        expr = this.withSpan(
+          { tag: "binop", op: "+", left: expr, right, id: this.newId() },
+          this.nodeStart(expr),
+          this.nodeEnd(right),
+        );
       } else if (this.acceptSymbol("-")) {
-        expr = { tag: "binop", op: "-", left: expr, right: this.parseMulDiv(), id: this.newId() };
+        const right = this.parseMulDiv();
+        expr = this.withSpan(
+          { tag: "binop", op: "-", left: expr, right, id: this.newId() },
+          this.nodeStart(expr),
+          this.nodeEnd(right),
+        );
       } else {
         break;
       }
@@ -327,11 +397,26 @@ class Parser {
     let expr = this.parseUnary();
     while (true) {
       if (this.acceptSymbol("*")) {
-        expr = { tag: "binop", op: "*", left: expr, right: this.parseUnary(), id: this.newId() };
+        const right = this.parseUnary();
+        expr = this.withSpan(
+          { tag: "binop", op: "*", left: expr, right, id: this.newId() },
+          this.nodeStart(expr),
+          this.nodeEnd(right),
+        );
       } else if (this.acceptSymbol("/")) {
-        expr = { tag: "binop", op: "/", left: expr, right: this.parseUnary(), id: this.newId() };
+        const right = this.parseUnary();
+        expr = this.withSpan(
+          { tag: "binop", op: "/", left: expr, right, id: this.newId() },
+          this.nodeStart(expr),
+          this.nodeEnd(right),
+        );
       } else if (this.acceptSymbol("%")) {
-        expr = { tag: "binop", op: "%", left: expr, right: this.parseUnary(), id: this.newId() };
+        const right = this.parseUnary();
+        expr = this.withSpan(
+          { tag: "binop", op: "%", left: expr, right, id: this.newId() },
+          this.nodeStart(expr),
+          this.nodeEnd(right),
+        );
       } else {
         break;
       }
@@ -340,7 +425,8 @@ class Parser {
   }
 
   private parseUnary(): Expr {
-    if (this.acceptSymbol("-")) {
+    const minusToken = this.acceptSymbolToken("-");
+    if (minusToken) {
       const next = this.peek();
       if (next.kind === "int") {
         this.advance();
@@ -349,9 +435,9 @@ class Parser {
           this.diagnostics.push(error("Integer literal out of 32-bit range", next.start, next.end));
         }
         if (value === UINT32_MAX / 2) {
-          return { tag: "int_lit", value: INT32_MIN, id: this.newId() };
+          return this.withSpan({ tag: "int_lit", value: INT32_MIN, id: this.newId() }, minusToken.start, next.end);
         }
-        return { tag: "int_lit", value: -value, id: this.newId() };
+        return this.withSpan({ tag: "int_lit", value: -value, id: this.newId() }, minusToken.start, next.end);
       }
       if (next.kind === "float") {
         this.advance();
@@ -359,9 +445,10 @@ class Parser {
         if (!Number.isFinite(Math.fround(-value))) {
           this.diagnostics.push(error("Float literal out of 32-bit range", next.start, next.end, "FLOAT_RANGE"));
         }
-        return { tag: "float_lit", value: -value, id: this.newId() };
+        return this.withSpan({ tag: "float_lit", value: -value, id: this.newId() }, minusToken.start, next.end);
       }
-      return { tag: "unop", op: "-", operand: this.parseUnary(), id: this.newId() };
+      const operand = this.parseUnary();
+      return this.withSpan({ tag: "unop", op: "-", operand, id: this.newId() }, minusToken.start, this.nodeEnd(operand));
     }
     return this.parsePostfix();
   }
@@ -370,8 +457,12 @@ class Parser {
     let expr = this.parsePrimary();
     while (true) {
       if (this.acceptSymbol(".")) {
-        const field = this.expectIdent("Expected field name after '.'");
-        expr = { tag: "field", target: expr, field, id: this.newId() };
+        const field = this.expectIdentToken("Expected field name after '.'");
+        expr = this.withSpan(
+          { tag: "field", target: expr, field: field.text, id: this.newId() },
+          this.nodeStart(expr),
+          field.end,
+        );
         continue;
       }
       if (this.acceptSymbol("[")) {
@@ -382,7 +473,11 @@ class Parser {
           } while (this.acceptSymbol(","));
           this.expectSymbol("]", "Expected ']' after indices");
         }
-        expr = { tag: "index", array: expr, indices, id: this.newId() };
+        expr = this.withSpan(
+          { tag: "index", array: expr, indices, id: this.newId() },
+          this.nodeStart(expr),
+          this.lastEnd(),
+        );
         continue;
       }
       break;
@@ -399,7 +494,7 @@ class Parser {
       if (!Number.isSafeInteger(value) || value > INT32_MAX) {
         this.diagnostics.push(error("Integer literal out of 32-bit range", t.start, t.end));
       }
-      return { tag: "int_lit", value, id: this.newId() };
+      return this.withSpan({ tag: "int_lit", value, id: this.newId() }, t.start, t.end);
     }
 
     if (t.kind === "float") {
@@ -408,18 +503,21 @@ class Parser {
       if (!Number.isFinite(Math.fround(value))) {
         this.diagnostics.push(error("Float literal out of 32-bit range", t.start, t.end, "FLOAT_RANGE"));
       }
-      return { tag: "float_lit", value, id: this.newId() };
+      return this.withSpan({ tag: "float_lit", value, id: this.newId() }, t.start, t.end);
     }
 
-    if (this.acceptKeyword("void")) {
-      return { tag: "void_lit", id: this.newId() };
+    const voidToken = this.acceptKeywordToken("void");
+    if (voidToken) {
+      return this.withSpan({ tag: "void_lit", id: this.newId() }, voidToken.start, voidToken.end);
     }
 
-    if (this.acceptKeyword("res")) {
-      return { tag: "res", id: this.newId() };
+    const resToken = this.acceptKeywordToken("res");
+    if (resToken) {
+      return this.withSpan({ tag: "res", id: this.newId() }, resToken.start, resToken.end);
     }
 
-    if (this.acceptKeyword("rec")) {
+    const recToken = this.acceptKeywordToken("rec");
+    if (recToken) {
       this.expectSymbol("(", "Expected '(' after rec");
       const args: Expr[] = [];
       if (!this.acceptSymbol(")")) {
@@ -428,19 +526,22 @@ class Parser {
         } while (this.acceptSymbol(","));
         this.expectSymbol(")", "Expected ')' after rec arguments");
       }
-      return { tag: "rec", args, id: this.newId() };
+      return this.withSpan({ tag: "rec", args, id: this.newId() }, recToken.start, this.lastEnd());
     }
 
-    if (this.acceptKeyword("array")) {
-      return this.parseComprehension("array_expr");
+    const arrayToken = this.acceptKeywordToken("array");
+    if (arrayToken) {
+      return this.parseComprehension("array_expr", arrayToken);
     }
 
-    if (this.acceptKeyword("sum")) {
-      return this.parseComprehension("sum_expr");
+    const sumToken = this.acceptKeywordToken("sum");
+    if (sumToken) {
+      return this.parseComprehension("sum_expr", sumToken);
     }
 
-    if (this.acceptSymbol("[")) {
-      return this.parseArrayLiteral();
+    const openBracket = this.acceptSymbolToken("[");
+    if (openBracket) {
+      return this.parseArrayLiteral(openBracket);
     }
 
     if (this.acceptSymbol("(")) {
@@ -452,7 +553,7 @@ class Parser {
     if (t.kind === "ident" && REMOVED_KEYWORDS.has(t.text)) {
       this.diagnostics.push(error(`'${t.text}' is not a keyword in JPL--`, t.start, t.end));
       this.advance();
-      return { tag: "void_lit", id: this.newId() };
+      return this.withSpan({ tag: "void_lit", id: this.newId() }, t.start, t.end);
     }
 
     if (t.kind === "ident") {
@@ -465,7 +566,7 @@ class Parser {
           } while (this.acceptSymbol(","));
           this.expectSymbol(")", "Expected ')' after call arguments");
         }
-        return { tag: "call", name: t.text, args, id: this.newId() };
+        return this.withSpan({ tag: "call", name: t.text, args, id: this.newId() }, t.start, this.lastEnd());
       }
       if (this.acceptSymbol("{")) {
         const fields: Expr[] = [];
@@ -475,17 +576,17 @@ class Parser {
           } while (this.acceptSymbol(","));
           this.expectSymbol("}", "Expected '}' after struct constructor fields");
         }
-        return { tag: "struct_cons", name: t.text, fields, id: this.newId() };
+        return this.withSpan({ tag: "struct_cons", name: t.text, fields, id: this.newId() }, t.start, this.lastEnd());
       }
-      return { tag: "var", name: t.text, id: this.newId() };
+      return this.withSpan({ tag: "var", name: t.text, id: this.newId() }, t.start, t.end);
     }
 
     this.diagnostics.push(error(`Unexpected token '${t.text}' in expression`, t.start, t.end));
     this.advance();
-    return { tag: "void_lit", id: this.newId() };
+    return this.withSpan({ tag: "void_lit", id: this.newId() }, t.start, t.end);
   }
 
-  private parseArrayLiteral(): Expr {
+  private parseArrayLiteral(startToken: Token): Expr {
     const elements: Expr[] = [];
     if (!this.acceptSymbol("]")) {
       do {
@@ -493,31 +594,32 @@ class Parser {
       } while (this.acceptSymbol(","));
       this.expectSymbol("]", "Expected ']' after array literal elements");
     }
-    return { tag: "array_cons", elements, id: this.newId() };
+    return this.withSpan({ tag: "array_cons", elements, id: this.newId() }, startToken.start, this.lastEnd());
   }
 
-  private parseComprehension(tag: "array_expr" | "sum_expr"): Expr {
+  private parseComprehension(tag: "array_expr" | "sum_expr", startToken: Token): Expr {
     this.expectSymbol("[", `Expected '[' after ${tag === "array_expr" ? "array" : "sum"}`);
     const bindings = this.parseBindings();
     this.expectSymbol("]", "Expected ']' after comprehension bindings");
     const body = this.parseExpr();
     if (body.tag === tag) {
-      return {
+      return this.withSpan({
         tag,
         bindings: [...bindings, ...body.bindings],
         body: body.body,
         id: this.newId(),
-      };
+      }, startToken.start, this.nodeEnd(body));
     }
-    return { tag, bindings, body, id: this.newId() };
+    return this.withSpan({ tag, bindings, body, id: this.newId() }, startToken.start, this.nodeEnd(body));
   }
 
   private parseBindings(): Binding[] {
     const bindings: Binding[] = [];
     do {
-      const name = this.expectIdent("Expected binder name in comprehension");
+      const name = this.expectIdentToken("Expected binder name in comprehension");
       this.expectSymbol(":", "Expected ':' after comprehension binder");
-      bindings.push({ name, expr: this.parseExpr() });
+      const expr = this.parseExpr();
+      bindings.push(this.withSpan({ name: name.text, expr }, name.start, this.nodeEnd(expr)));
     } while (this.acceptSymbol(","));
     return bindings;
   }
@@ -542,9 +644,22 @@ class Parser {
     return t;
   }
 
+  private previous(): Token {
+    return this.tokens[this.idx - 1] ?? this.tokens[0]!;
+  }
+
   private acceptKeyword(text: string): boolean {
     const t = this.peek();
     if (t.kind === "keyword" && t.text === text) {
+      this.advance();
+      return true;
+    }
+    return false;
+  }
+
+  private acceptWord(text: string): boolean {
+    const t = this.peek();
+    if ((t.kind === "keyword" || t.kind === "ident") && t.text === text) {
       this.advance();
       return true;
     }
@@ -603,6 +718,78 @@ class Parser {
       this.advance();
     }
     return "";
+  }
+
+  private acceptKeywordToken(text: string): Token | null {
+    const t = this.peek();
+    if (t.kind === "keyword" && t.text === text) {
+      this.advance();
+      return t;
+    }
+    return null;
+  }
+
+  private acceptWordToken(text: string): Token | null {
+    const t = this.peek();
+    if ((t.kind === "keyword" || t.kind === "ident") && t.text === text) {
+      this.advance();
+      return t;
+    }
+    return null;
+  }
+
+  private acceptSymbolToken(text: string): Token | null {
+    const t = this.peek();
+    if (t.kind === "symbol" && t.text === text) {
+      this.advance();
+      return t;
+    }
+    return null;
+  }
+
+  private expectIdentToken(message: string): Token {
+    const t = this.peek();
+    if (t.kind === "ident") {
+      if (REMOVED_KEYWORDS.has(t.text)) {
+        this.diagnostics.push(error(`'${t.text}' is not a valid identifier in JPL--`, t.start, t.end));
+        this.advance();
+        return { ...t, text: "_error" };
+      }
+      this.advance();
+      return t;
+    }
+    this.diagnostics.push(error(message, t.start, t.end));
+    this.advance();
+    return { ...t, text: "_error" };
+  }
+
+  private expectStringToken(message: string): Token {
+    const t = this.peek();
+    if (t.kind === "string") {
+      this.advance();
+      return t;
+    }
+    this.diagnostics.push(error(message, t.start, t.end));
+    if (!this.isEof()) {
+      this.advance();
+    }
+    return { ...t, text: "" };
+  }
+
+  private withSpan<const T extends object>(node: T, start: number, end: number): T & { start: number; end: number } {
+    return { ...node, start, end };
+  }
+
+  private nodeStart(node: { start?: number }): number {
+    return node.start ?? this.peek().start;
+  }
+
+  private nodeEnd(node: { end?: number }): number {
+    return node.end ?? this.lastEnd();
+  }
+
+  private lastEnd(): number {
+    return this.previous().end;
   }
 }
 

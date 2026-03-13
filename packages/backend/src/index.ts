@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Param, Type } from "@jplmm/ast";
 import type { IRExpr, IRFunction, IRProgram, IRStmt, IRStructDef } from "@jplmm/ir";
 import type {
+  AitkenImplementation,
   ClosedFormImplementation,
   LutImplementation,
   OptimizeArtifacts,
@@ -18,6 +19,104 @@ export type EmitWatOptions = {
   artifacts?: OptimizeArtifacts;
   exportFunctions?: boolean;
   exportMemory?: boolean;
+  moduleComments?: string[];
+};
+
+export type WatImplementationTag =
+  | "plain"
+  | "closed_form_linear_countdown"
+  | "lut"
+  | "aitken_scalar_tail"
+  | "linear_speculation";
+
+export type WatHelperSemantic = {
+  name: string;
+  semantics: string;
+};
+
+export type WatExprSemantics = {
+  tag: IRExpr["tag"];
+  resultType: Type;
+  lowering: {
+    kind: string;
+    semantics: string;
+    helper: string | null;
+    helpers: string[];
+    rawOps: string[];
+    notes: string[];
+  };
+  children: WatExprSemantics[];
+};
+
+export type WatStmtSemantics = {
+  stmtIndex: number;
+  tag: IRStmt["tag"];
+  lowering: string;
+  target: string | null;
+  expr: WatExprSemantics | null;
+};
+
+export type WatRecursionSemantics = {
+  hasTailRec: boolean;
+  hasNonTailRec: boolean;
+  tailStrategy: "none" | "return_call" | "loop_branch";
+  fuel: {
+    kind: "none" | "local" | "param";
+    limit: number | null;
+  };
+  collapse: Array<{
+    param: string;
+    type: Type;
+    equality: string;
+    helper: string | null;
+  }>;
+  aitken: boolean;
+};
+
+export type WatFallbackSemantics = {
+  wasmName: string;
+  helpers: WatHelperSemantic[];
+  recursion: WatRecursionSemantics;
+  statements: WatStmtSemantics[];
+};
+
+export type WatFunctionSemantics = {
+  name: string;
+  entryWasmName: string;
+  bodyWasmName: string;
+  exportName: string | null;
+  implementation: {
+    tag: WatImplementationTag;
+    loweredAs: "plain" | "gas_tail_wrapper" | "closed_form" | "lut_wrapper";
+    fallbackWasmName: string | null;
+    notes: string[];
+  };
+  helpers: WatHelperSemantic[];
+  recursion: WatRecursionSemantics;
+  statements: WatStmtSemantics[];
+  fallback: WatFallbackSemantics | null;
+};
+
+export type WatModuleSemantics = {
+  kind: "jplmm_wasm_semantics";
+  options: {
+    tailCalls: boolean;
+    exportFunctions: boolean;
+    exportMemory: boolean;
+  };
+  memory: {
+    heapBase: number;
+    initialPages: number;
+    luts: Array<{
+      fnName: string;
+      offset: number;
+      cells: number;
+      resultType: Type;
+      parameterRanges: LutImplementation["parameterRanges"];
+    }>;
+  };
+  helperSemantics: Record<string, string>;
+  functions: WatFunctionSemantics[];
 };
 
 type FuelStorage =
@@ -37,6 +136,7 @@ type EmitFunctionContext = {
   useTailCalls: boolean;
   loopLabel: string | null;
   fuel: FuelStorage;
+  aitken: AitkenImplementation | null;
   structs: Map<string, IRStructDef>;
 };
 
@@ -52,6 +152,57 @@ type MemoryPlan = {
   dataLines: string[];
 };
 
+type WatModuleContext = {
+  structs: Map<string, IRStructDef>;
+  memoryPlan: MemoryPlan;
+};
+
+type PlainFunctionLoweringTarget = {
+  wasmName: string;
+  publicName: string;
+  exportName: string | undefined;
+  allowTailCalls: boolean;
+  aitken: AitkenImplementation | null;
+  structs: Map<string, IRStructDef>;
+};
+
+type PlainFunctionLoweringPlan = {
+  kind: "plain";
+  implementationTag: WatImplementationTag;
+  entryWasmName: string;
+  bodyWasmName: string;
+  entryExportName: string | undefined;
+  gasLimit: number | null;
+  hasTailRec: boolean;
+  ctx: EmitFunctionContext;
+};
+
+type ClosedFormFunctionLoweringPlan = {
+  kind: "closed_form";
+  implementationTag: "closed_form_linear_countdown";
+  fn: IRFunction;
+  entryWasmName: string;
+  bodyWasmName: string;
+  exportName: string | undefined;
+  implementation: ClosedFormImplementation;
+};
+
+type LutFunctionLoweringPlan = {
+  kind: "lut";
+  implementationTag: "lut";
+  fn: IRFunction;
+  entryWasmName: string;
+  bodyWasmName: string;
+  exportName: string | undefined;
+  layout: LutLayout;
+  fallback: PlainFunctionLoweringPlan;
+};
+
+type WatFunctionLoweringPlan =
+  | PlainFunctionLoweringPlan
+  | ClosedFormFunctionLoweringPlan
+  | LutFunctionLoweringPlan;
+
 export type CompileWatOptions = {
   tailCalls?: boolean;
   wat2wasmPath?: string;
@@ -64,16 +215,17 @@ export type InstantiateWatOptions = CompileWatOptions & {
 const FUEL_NAME = "jplmm_fuel";
 
 export function emitWatModule(program: IRProgram, options: EmitWatOptions = {}): string {
-  const structs = new Map(program.structs.map((struct) => [struct.name, struct] as const));
-  const memoryPlan = planMemory(options.artifacts);
+  const module = createWatModuleContext(program, options);
   const importBlock = emitMathImports();
-  const helperBlock = emitHelpers(program, memoryPlan.heapBase);
-  const memoryBlock = emitMemoryBlock(memoryPlan, options.exportMemory === true);
+  const helperBlock = emitHelpers(program, module.memoryPlan.heapBase, options.exportFunctions === true);
+  const memoryBlock = emitMemoryBlock(module.memoryPlan, options.exportMemory === true);
+  const commentBlock = emitModuleComments(options.moduleComments);
   const functions = program.functions
-    .map((fn) => emitFunctionSet(fn, options, memoryPlan.lutLayouts, structs))
+    .map((fn) => emitFunctionSet(fn, options, module))
     .filter(Boolean)
     .join("\n\n");
   return `(module
+${commentBlock ? `${indent(commentBlock, 1)}\n` : ""}\
 ${importBlock ? `${indent(importBlock, 1)}\n` : ""}\
 ${indent(helperBlock, 1)}
 ${memoryBlock ? `\n${indent(memoryBlock, 1)}` : ""}
@@ -83,76 +235,231 @@ ${functions ? `\n${indent(functions, 1)}` : ""}
 
 export const packageName = "@jplmm/backend";
 
+export function buildWatSemantics(program: IRProgram, options: EmitWatOptions = {}): WatModuleSemantics {
+  const module = createWatModuleContext(program, options);
+  const functions = program.functions.map((fn) => describeWatFunctionSemantics(
+    planWatFunctionLowering(fn, options, module.memoryPlan.lutLayouts, module.structs),
+  ));
+  const helperNames = new Set<string>();
+  for (const fn of functions) {
+    for (const helper of fn.helpers) {
+      helperNames.add(helper.name);
+    }
+    for (const helper of fn.fallback?.helpers ?? []) {
+      helperNames.add(helper.name);
+    }
+  }
+  return {
+    kind: "jplmm_wasm_semantics",
+    options: {
+      tailCalls: options.tailCalls !== false,
+      exportFunctions: options.exportFunctions === true,
+      exportMemory: options.exportMemory === true,
+    },
+    memory: {
+      heapBase: module.memoryPlan.heapBase,
+      initialPages: module.memoryPlan.initialPages,
+      luts: [...module.memoryPlan.lutLayouts.entries()]
+        .sort(([, a], [, b]) => a.offset - b.offset)
+        .map(([fnName, layout]) => ({
+          fnName,
+          offset: layout.offset,
+          cells: layout.impl.table.length,
+          resultType: layout.impl.resultType,
+          parameterRanges: layout.impl.parameterRanges,
+        })),
+    },
+    helperSemantics: Object.fromEntries(
+      [...helperNames]
+        .sort((a, b) => a.localeCompare(b))
+        .map((name) => [name, describeHelperSemantic(name)]),
+    ),
+    functions,
+  };
+}
+
+function createWatModuleContext(program: IRProgram, options: EmitWatOptions): WatModuleContext {
+  return {
+    structs: new Map(program.structs.map((struct) => [struct.name, struct] as const)),
+    memoryPlan: planMemory(options.artifacts),
+  };
+}
+
 function emitFunctionSet(
+  fn: IRFunction,
+  options: EmitWatOptions,
+  module: WatModuleContext,
+): string {
+  return emitFunctionSetFromPlan(planWatFunctionLowering(fn, options, module.memoryPlan.lutLayouts, module.structs), options);
+}
+
+function planWatFunctionLowering(
   fn: IRFunction,
   options: EmitWatOptions,
   lutLayouts: Map<string, LutLayout>,
   structs: Map<string, IRStructDef>,
-): string {
+): WatFunctionLoweringPlan {
   const implementation = options.artifacts?.implementations.get(fn.name);
+  const implementationTag = implementationTagForLowering(implementation?.tag);
+  const aitken = implementation?.tag === "aitken_scalar_tail" ? implementation : null;
   if (implementation?.tag === "closed_form_linear_countdown") {
-    return emitClosedFormFunction(fn, implementation, options);
+    return {
+      kind: "closed_form",
+      implementationTag: "closed_form_linear_countdown",
+      fn,
+      entryWasmName: fn.name,
+      bodyWasmName: fn.name,
+      exportName: options.exportFunctions === true ? fn.name : undefined,
+      implementation,
+    };
   }
   if (implementation?.tag === "lut") {
     const layout = lutLayouts.get(fn.name);
     if (layout) {
-      return emitLutFunctionSet(fn, layout, options, structs);
+      return {
+        kind: "lut",
+        implementationTag: "lut",
+        fn,
+        entryWasmName: fn.name,
+        bodyWasmName: fn.name,
+        exportName: options.exportFunctions === true ? fn.name : undefined,
+        layout,
+        fallback: planPlainFunctionLowering(
+          fn,
+          {
+            ...options,
+            tailCalls: false,
+          },
+          {
+            wasmName: `${fn.name}__generic`,
+            publicName: fn.name,
+            exportName: undefined,
+            allowTailCalls: false,
+            aitken: null,
+            structs,
+          },
+          implementationTag,
+        ),
+      };
     }
   }
-  return emitPlainFunctionSet(fn, options, {
-    wasmName: fn.name,
-    publicName: fn.name,
-    exportName: options.exportFunctions === true ? fn.name : undefined,
-    allowTailCalls: true,
-    structs,
-  });
+  return planPlainFunctionLowering(
+    fn,
+    options,
+    {
+      wasmName: fn.name,
+      publicName: fn.name,
+      exportName: options.exportFunctions === true ? fn.name : undefined,
+      allowTailCalls: aitken === null,
+      aitken,
+      structs,
+    },
+    implementationTag,
+  );
 }
 
-function emitPlainFunctionSet(
+function planPlainFunctionLowering(
   fn: IRFunction,
   options: EmitWatOptions,
-  target: {
-    wasmName: string;
-    publicName: string;
-    exportName: string | undefined;
-    allowTailCalls: boolean;
-    structs: Map<string, IRStructDef>;
-  },
-): string {
+  target: PlainFunctionLoweringTarget,
+  implementationTag: WatImplementationTag,
+): PlainFunctionLoweringPlan {
   const gasLimit = getFiniteGasLimit(fn);
   const hasTailRec = findTailRecStmt(fn.body) !== null;
-  const wantTailCalls = target.allowTailCalls && hasTailRec && options.tailCalls !== false;
+  const wantTailCalls = target.allowTailCalls && hasTailRec && options.tailCalls !== false && target.aitken === null;
 
   if (wantTailCalls && gasLimit !== null) {
     const helperName = `${target.wasmName}__tail`;
-    return [emitGasTailWrapper(fn, target.wasmName, target.exportName, helperName, gasLimit), emitFunctionBody({
-      fn,
-      wasmName: helperName,
-      publicName: target.publicName,
-      tailTargetName: helperName,
-      exportName: undefined,
-      useTailCalls: true,
-      loopLabel: null,
-      fuel: {
-        kind: "param",
-        name: FUEL_NAME,
-        limit: gasLimit,
+    return {
+      kind: "plain",
+      implementationTag,
+      entryWasmName: target.wasmName,
+      bodyWasmName: helperName,
+      entryExportName: target.exportName,
+      gasLimit,
+      hasTailRec,
+      ctx: {
+        fn,
+        wasmName: helperName,
+        publicName: target.publicName,
+        tailTargetName: helperName,
+        exportName: undefined,
+        useTailCalls: true,
+        loopLabel: null,
+        fuel: {
+          kind: "param",
+          name: FUEL_NAME,
+          limit: gasLimit,
+        },
+        aitken: target.aitken,
+        structs: target.structs,
       },
-      structs: target.structs,
-    })].join("\n\n");
+    };
   }
 
-  return emitFunctionBody({
-    fn,
-    wasmName: target.wasmName,
-    publicName: target.publicName,
-    tailTargetName: target.wasmName,
-    exportName: target.exportName,
-    useTailCalls: wantTailCalls,
-    loopLabel: wantTailCalls ? null : hasTailRec ? `${target.wasmName}__loop` : null,
-    fuel: gasLimit === null ? null : { kind: "local", name: FUEL_NAME, limit: gasLimit },
-    structs: target.structs,
-  });
+  return {
+    kind: "plain",
+    implementationTag,
+    entryWasmName: target.wasmName,
+    bodyWasmName: target.wasmName,
+    entryExportName: target.exportName,
+    gasLimit,
+    hasTailRec,
+    ctx: {
+      fn,
+      wasmName: target.wasmName,
+      publicName: target.publicName,
+      tailTargetName: target.wasmName,
+      exportName: target.exportName,
+      useTailCalls: wantTailCalls,
+      loopLabel: wantTailCalls ? null : hasTailRec ? `${target.wasmName}__loop` : null,
+      fuel: gasLimit === null ? null : { kind: "local", name: FUEL_NAME, limit: gasLimit },
+      aitken: target.aitken,
+      structs: target.structs,
+    },
+  };
+}
+
+function emitFunctionSetFromPlan(plan: WatFunctionLoweringPlan, options: EmitWatOptions): string {
+  switch (plan.kind) {
+    case "closed_form":
+      return emitClosedFormFunction(plan.fn, plan.implementation, {
+        ...options,
+        exportFunctions: plan.exportName !== undefined,
+      });
+    case "lut":
+      return emitLutFunctionSetFromPlan(plan);
+    case "plain":
+      return emitPlainFunctionSet(plan);
+    default: {
+      const _never: never = plan;
+      return _never;
+    }
+  }
+}
+
+function emitPlainFunctionSet(
+  plan: PlainFunctionLoweringPlan,
+): string {
+  if (plan.entryWasmName !== plan.bodyWasmName && plan.gasLimit !== null) {
+    return [
+      emitGasTailWrapper(plan.ctx.fn, plan.entryWasmName, plan.entryExportName, plan.bodyWasmName, plan.gasLimit),
+      emitFunctionBody(plan.ctx),
+    ].join("\n\n");
+  }
+  return emitFunctionBody(plan.ctx);
+}
+
+function implementationTagForLowering(tag: string | undefined): WatImplementationTag {
+  switch (tag) {
+    case "closed_form_linear_countdown":
+    case "lut":
+    case "aitken_scalar_tail":
+    case "linear_speculation":
+      return tag;
+    default:
+      return "plain";
+  }
 }
 
 function emitClosedFormFunction(
@@ -194,35 +501,16 @@ ${indent(body, 1)}
 )`;
 }
 
-function emitLutFunctionSet(
-  fn: IRFunction,
-  layout: LutLayout,
-  options: EmitWatOptions,
-  structs: Map<string, IRStructDef>,
-): string {
-  const genericName = `${fn.name}__generic`;
-  const exportClause = options.exportFunctions === true ? ` (export "${fn.name}")` : "";
-  const wrapper = `(func $${fn.name}${exportClause} ${fn.params
+function emitLutFunctionSetFromPlan(plan: LutFunctionLoweringPlan): string {
+  const exportClause = plan.exportName ? ` (export "${plan.exportName}")` : "";
+  const wrapper = `(func $${plan.entryWasmName}${exportClause} ${plan.fn.params
     .map((param) => `(param $${param.name} ${wasmType(param.type)})`)
-    .join(" ")} (result ${wasmType(fn.retType)})
+    .join(" ")} (result ${wasmType(plan.fn.retType)})
   (local $jplmm_lut_index i32)
-${indent(emitLutWrapperBody(fn, layout), 1)}
+${indent(emitLutWrapperBody(plan.fn, plan.layout), 1)}
 )`;
 
-  const fallback = emitPlainFunctionSet(
-    fn,
-    {
-      ...options,
-      tailCalls: false,
-    },
-    {
-      wasmName: genericName,
-      publicName: fn.name,
-      exportName: undefined,
-      allowTailCalls: false,
-      structs,
-    },
-  );
+  const fallback = emitPlainFunctionSet(plan.fallback);
 
   return [wrapper, fallback].join("\n\n");
 }
@@ -281,6 +569,10 @@ ${localDecls ? `${indent(localDecls, 1)}\n` : ""}${indent(lines.join("\n"), 1)}
 function emitStatements(ctx: EmitFunctionContext): string {
   const chunks: string[] = [];
 
+  if (ctx.aitken) {
+    chunks.push(emitAitkenPrelude(ctx));
+  }
+
   for (const stmt of ctx.fn.body) {
     if (stmt.tag === "gas" || stmt.tag === "rad") {
       continue;
@@ -325,6 +617,10 @@ function emitTailRecStmt(expr: Extract<IRExpr, { tag: "rec" }>, ctx: EmitFunctio
     lines.push(`local.set $${ctx.fuel.name}`);
   }
 
+  if (ctx.aitken) {
+    lines.push(emitAitkenRewrite(ctx, expr));
+  }
+
   if (ctx.useTailCalls) {
     lines.push(...emitRecArgLoads(expr));
     if (ctx.fuel?.kind === "param") {
@@ -343,6 +639,646 @@ function emitTailRecStmt(expr: Extract<IRExpr, { tag: "rec" }>, ctx: EmitFunctio
   }
   lines.push(`br $${ctx.loopLabel}`);
   return lines.join("\n");
+}
+
+function describeWatFunctionSemantics(plan: WatFunctionLoweringPlan): WatFunctionSemantics {
+  switch (plan.kind) {
+    case "plain": {
+      const statements = describePlainStatements(plan.ctx);
+      const recursion = describePlainRecursionSemantics(plan);
+      return {
+        name: plan.ctx.fn.name,
+        entryWasmName: plan.entryWasmName,
+        bodyWasmName: plan.bodyWasmName,
+        exportName: plan.entryExportName ?? null,
+        implementation: {
+          tag: plan.implementationTag,
+          loweredAs: plan.entryWasmName === plan.bodyWasmName ? "plain" : "gas_tail_wrapper",
+          fallbackWasmName: null,
+          notes: describePlainImplementationNotes(plan),
+        },
+        helpers: buildHelperSemantics(collectHelperNamesFromStatements(statements, recursion)),
+        recursion,
+        statements,
+        fallback: null,
+      };
+    }
+    case "closed_form": {
+      const helpers = buildHelperSemantics([
+        "jplmm_sat_add_i32",
+        "jplmm_total_div_i32",
+        "jplmm_sat_mul_i32",
+      ]);
+      return {
+        name: plan.fn.name,
+        entryWasmName: plan.entryWasmName,
+        bodyWasmName: plan.bodyWasmName,
+        exportName: plan.exportName ?? null,
+        implementation: {
+          tag: plan.implementationTag,
+          loweredAs: "closed_form",
+          fallbackWasmName: null,
+          notes: [
+            "recognized as a linear countdown closed form",
+            "lowered to saturating integer arithmetic plus total division",
+          ],
+        },
+        helpers,
+        recursion: {
+          hasTailRec: false,
+          hasNonTailRec: false,
+          tailStrategy: "none",
+          fuel: { kind: "none", limit: null },
+          collapse: [],
+          aitken: false,
+        },
+        statements: [{
+          stmtIndex: -1,
+          tag: "ret",
+          lowering: "closed-form specialization computes the countdown result directly with total and saturating arithmetic helpers",
+          target: "res",
+          expr: null,
+        }],
+        fallback: null,
+      };
+    }
+    case "lut": {
+      const fallbackStatements = describePlainStatements(plan.fallback.ctx);
+      const fallbackRecursion = describePlainRecursionSemantics(plan.fallback);
+      return {
+        name: plan.fn.name,
+        entryWasmName: plan.entryWasmName,
+        bodyWasmName: plan.bodyWasmName,
+        exportName: plan.exportName ?? null,
+        implementation: {
+          tag: plan.implementationTag,
+          loweredAs: "lut_wrapper",
+          fallbackWasmName: plan.fallback.entryWasmName,
+          notes: [
+            "entrypoint checks whether inputs fall inside the tabulated parameter ranges",
+            "in-range calls load directly from Wasm linear memory; out-of-range calls fall back to the generic function body",
+          ],
+        },
+        helpers: [],
+        recursion: {
+          hasTailRec: false,
+          hasNonTailRec: false,
+          tailStrategy: "none",
+          fuel: { kind: "none", limit: null },
+          collapse: [],
+          aitken: false,
+        },
+        statements: [{
+          stmtIndex: -1,
+          tag: "ret",
+          lowering: "LUT wrapper checks parameter ranges, loads from linear memory on hits, and otherwise calls the generic fallback",
+          target: "res",
+          expr: null,
+        }],
+        fallback: {
+          wasmName: plan.fallback.entryWasmName,
+          helpers: buildHelperSemantics(collectHelperNamesFromStatements(fallbackStatements, fallbackRecursion)),
+          recursion: fallbackRecursion,
+          statements: fallbackStatements,
+        },
+      };
+    }
+    default: {
+      const _never: never = plan;
+      return _never;
+    }
+  }
+}
+
+function describePlainStatements(ctx: EmitFunctionContext): WatStmtSemantics[] {
+  return ctx.fn.body.map((stmt, stmtIndex) => {
+    if (stmt.tag === "gas") {
+      return {
+        stmtIndex,
+        tag: stmt.tag,
+        lowering: stmt.limit === "inf"
+          ? "gas inf is not lowered to a finite Wasm fuel guard"
+          : `finite gas ${stmt.limit} becomes an explicit recursion fuel guard in Wasm`,
+        target: null,
+        expr: null,
+      };
+    }
+    if (stmt.tag === "rad") {
+      return {
+        stmtIndex,
+        tag: stmt.tag,
+        lowering: "rad is a proof/termination annotation and does not emit Wasm instructions",
+        target: null,
+        expr: describeExprSemantics(stmt.expr, ctx),
+      };
+    }
+    if (stmt.tag === "let") {
+      return {
+        stmtIndex,
+        tag: stmt.tag,
+        lowering: "evaluates the expression and stores the lowered value in a Wasm local",
+        target: stmt.name,
+        expr: describeExprSemantics(stmt.expr, ctx),
+      };
+    }
+    if (stmt.expr.tag === "rec" && stmt.expr.tailPosition) {
+      return {
+        stmtIndex,
+        tag: stmt.tag,
+        lowering: ctx.useTailCalls
+          ? "tail recursion becomes a collapse check, optional fuel decrement, and return_call to the helper body"
+          : "tail recursion becomes a collapse check, optional fuel decrement, local parameter rewrite, and loop branch",
+        target: ctx.useTailCalls ? null : "params",
+        expr: describeExprSemantics(stmt.expr, ctx),
+      };
+    }
+    return {
+      stmtIndex,
+      tag: stmt.tag,
+      lowering: "evaluates the expression and stores the lowered value in the result local",
+      target: "res",
+      expr: describeExprSemantics(stmt.expr, ctx),
+    };
+  });
+}
+
+function describePlainRecursionSemantics(plan: PlainFunctionLoweringPlan): WatRecursionSemantics {
+  const hasNonTailRec = plan.ctx.fn.body.some((stmt) => stmt.tag !== "gas" && exprHasNonTailRec(stmt.expr));
+  const hasAnyRec = plan.hasTailRec || hasNonTailRec;
+  return {
+    hasTailRec: plan.hasTailRec,
+    hasNonTailRec,
+    tailStrategy: plan.ctx.useTailCalls ? "return_call" : plan.hasTailRec ? "loop_branch" : "none",
+    fuel: plan.ctx.fuel
+      ? {
+          kind: plan.ctx.fuel.kind,
+          limit: plan.ctx.fuel.limit,
+        }
+      : {
+          kind: "none",
+          limit: null,
+        },
+    collapse: hasAnyRec
+      ? plan.ctx.fn.params.map((param) => {
+          const equality = describeParamEqualityLowering(param);
+          return {
+            param: param.name,
+            type: param.type,
+            equality: equality.semantics,
+            helper: equality.helper,
+          };
+        })
+      : [],
+    aitken: plan.ctx.aitken !== null,
+  };
+}
+
+function describePlainImplementationNotes(plan: PlainFunctionLoweringPlan): string[] {
+  const notes: string[] = [];
+  if (plan.entryWasmName !== plan.bodyWasmName && plan.gasLimit !== null) {
+    notes.push(`exported entry ${plan.entryWasmName} forwards an explicit finite fuel counter to helper ${plan.bodyWasmName}`);
+  }
+  if (plan.implementationTag === "linear_speculation") {
+    notes.push("linear speculation was recognized upstream, but the Wasm backend currently lowers the generic recursive body");
+  }
+  if (plan.ctx.aitken) {
+    notes.push("Aitken acceleration is applied in the tail-recursive state-update path before the next recursive step");
+  }
+  return notes;
+}
+
+function describeExprSemantics(expr: IRExpr, ctx: EmitFunctionContext): WatExprSemantics {
+  switch (expr.tag) {
+    case "int_lit":
+      return leafExprSemantics(expr, "const", "materializes a 32-bit integer constant", [], ["i32.const"]);
+    case "float_lit":
+      return leafExprSemantics(expr, "const", "materializes a 32-bit float constant", [], ["f32.const"]);
+    case "void_lit":
+      return leafExprSemantics(
+        expr,
+        "default_void",
+        "void is represented with a zero default in the Wasm ABI slot",
+        [],
+        [expr.resultType.tag === "float" ? "f32.const 0" : "i32.const 0"],
+      );
+    case "var":
+      return leafExprSemantics(expr, "local_get", `reads Wasm local '${expr.name}'`, [], ["local.get"]);
+    case "res":
+      return leafExprSemantics(expr, "local_get", "reads the current result local", [], ["local.get"]);
+    case "binop":
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: "raw_binop",
+          semantics: `applies raw Wasm ${expr.resultType.tag} ${expr.op} arithmetic`,
+          helper: null,
+          helpers: [],
+          rawOps: [rawBinop(expr.op, expr.resultType)],
+          notes: [],
+        },
+        children: [describeExprSemantics(expr.left, ctx), describeExprSemantics(expr.right, ctx)],
+      };
+    case "unop":
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: "raw_unop",
+          semantics: expr.resultType.tag === "int"
+            ? "integer negation is lowered as multiply by -1"
+            : "float negation is lowered as f32.neg",
+          helper: null,
+          helpers: [],
+          rawOps: expr.resultType.tag === "int" ? ["i32.const -1", "i32.mul"] : ["f32.neg"],
+          notes: [],
+        },
+        children: [describeExprSemantics(expr.operand, ctx)],
+      };
+    case "call": {
+      const lowering = describeCallLowering(expr.name, expr.resultType);
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: lowering.kind,
+          semantics: lowering.semantics,
+          helper: lowering.helper,
+          helpers: lowering.helpers,
+          rawOps: lowering.rawOps,
+          notes: lowering.notes,
+        },
+        children: expr.args.map((arg) => describeExprSemantics(arg, ctx)),
+      };
+    }
+    case "rec":
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: expr.tailPosition ? "tail_recursion" : "recursive_call",
+          semantics: describeRecSemantics(expr, ctx),
+          helper: null,
+          helpers: recursionHelperNames(ctx.fn.params),
+          rawOps: [],
+          notes: describeRecNotes(expr, ctx),
+        },
+        children: expr.args.map((arg) => describeExprSemantics(arg, ctx)),
+      };
+    case "total_div":
+      return helperExprSemantics(
+        expr,
+        expr.resultType.tag === "float" ? "jplmm_total_div_f32" : "jplmm_total_div_i32",
+        "totalized division defers to a backend helper that returns zero on division by zero",
+        [describeExprSemantics(expr.left, ctx), describeExprSemantics(expr.right, ctx)],
+      );
+    case "total_mod":
+      return helperExprSemantics(
+        expr,
+        expr.resultType.tag === "float" ? "jplmm_total_mod_f32" : "jplmm_total_mod_i32",
+        "totalized modulus defers to a backend helper that returns zero on division by zero",
+        [describeExprSemantics(expr.left, ctx), describeExprSemantics(expr.right, ctx)],
+      );
+    case "nan_to_zero":
+      return helperExprSemantics(
+        expr,
+        "jplmm_nan_to_zero_f32",
+        "normalizes NaN float results to zero",
+        [describeExprSemantics(expr.value, ctx)],
+      );
+    case "sat_add":
+      return helperExprSemantics(
+        expr,
+        "jplmm_sat_add_i32",
+        "saturating integer addition is delegated to a helper",
+        [describeExprSemantics(expr.left, ctx), describeExprSemantics(expr.right, ctx)],
+      );
+    case "sat_sub":
+      return helperExprSemantics(
+        expr,
+        "jplmm_sat_sub_i32",
+        "saturating integer subtraction is delegated to a helper",
+        [describeExprSemantics(expr.left, ctx), describeExprSemantics(expr.right, ctx)],
+      );
+    case "sat_mul":
+      return helperExprSemantics(
+        expr,
+        "jplmm_sat_mul_i32",
+        "saturating integer multiplication is delegated to a helper",
+        [describeExprSemantics(expr.left, ctx), describeExprSemantics(expr.right, ctx)],
+      );
+    case "sat_neg":
+      return helperExprSemantics(
+        expr,
+        "jplmm_sat_neg_i32",
+        "saturating integer negation is delegated to a helper",
+        [describeExprSemantics(expr.operand, ctx)],
+      );
+    case "field": {
+      const targetType = expr.target.resultType.tag === "named" ? expr.target.resultType.name : "unknown";
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: "struct_field",
+          semantics: `checks for a non-null ${targetType} handle and then loads field '${expr.field}' from linear memory`,
+          helper: expr.resultType.tag === "float" ? "jplmm_word_load_f32" : "jplmm_word_load_i32",
+          helpers: [expr.resultType.tag === "float" ? "jplmm_word_load_f32" : "jplmm_word_load_i32"],
+          rawOps: [],
+          notes: [],
+        },
+        children: [describeExprSemantics(expr.target, ctx)],
+      };
+    }
+    case "struct_cons":
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: "struct_alloc",
+          semantics: `allocates a heap-backed struct '${expr.name}' and stores each lowered field into linear memory`,
+          helper: "jplmm_alloc_words",
+          helpers: ["jplmm_alloc_words", ...collectStoreHelpers(expr.fields)],
+          rawOps: [],
+          notes: [],
+        },
+        children: expr.fields.map((field) => describeExprSemantics(field, ctx)),
+      };
+    case "array_cons":
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: "array_literal",
+          semantics: expr.elements[0]?.resultType.tag === "array"
+            ? "allocates an array, checks nested ranks and dimensions for agreement, and copies child payloads into linear memory"
+            : "allocates a rank-1 array and stores each element into linear memory",
+          helper: arrayAllocHelperName(expectArrayType(expr.resultType, "array literal").dims),
+          helpers: arrayConsHelpers(expr),
+          rawOps: [],
+          notes: [],
+        },
+        children: expr.elements.map((element) => describeExprSemantics(element, ctx)),
+      };
+    case "array_expr":
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: "array_comprehension",
+          semantics: "iterates the bindings with positive extents, infers or checks array dimensions, allocates one destination array, then fills it in row-major order",
+          helper: arrayAllocHelperName(expectArrayType(expr.resultType, "array comprehension").dims),
+          helpers: arrayExprHelpers(expr),
+          rawOps: [],
+          notes: bindingLoopNotes(expr),
+        },
+        children: [
+          ...expr.bindings.map((binding) => describeExprSemantics(binding.expr, ctx)),
+          describeExprSemantics(expr.body, ctx),
+        ],
+      };
+    case "sum_expr":
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: "sum_comprehension",
+          semantics: "iterates the bindings with positive extents and accumulates the body with totalized sum semantics",
+          helper: expr.resultType.tag === "float" ? "jplmm_nan_to_zero_f32" : "jplmm_sat_add_i32",
+          helpers: expr.resultType.tag === "float" ? ["jplmm_nan_to_zero_f32"] : ["jplmm_sat_add_i32"],
+          rawOps: expr.resultType.tag === "float" ? ["f32.add"] : [],
+          notes: bindingLoopNotes(expr),
+        },
+        children: [
+          ...expr.bindings.map((binding) => describeExprSemantics(binding.expr, ctx)),
+          describeExprSemantics(expr.body, ctx),
+        ],
+      };
+    case "index":
+      return {
+        tag: expr.tag,
+        resultType: expr.resultType,
+        lowering: {
+          kind: "array_index",
+          semantics: expr.indices.length === expectArrayType(expr.array.resultType, "array indexing").dims
+            ? "computes row-major offsets with clamped indices and loads one element from linear memory"
+            : "computes row-major offsets with clamped indices and slices the remaining suffix array",
+          helper: expr.indices.length === expectArrayType(expr.array.resultType, "array indexing").dims
+            ? (expr.resultType.tag === "float" ? "jplmm_word_load_f32" : "jplmm_word_load_i32")
+            : "jplmm_array_slice",
+          helpers: indexHelpers(expr),
+          rawOps: [],
+          notes: ["each index is clamped into the inclusive range [0, dim - 1] before offset calculation"],
+        },
+        children: [describeExprSemantics(expr.array, ctx), ...expr.indices.map((index) => describeExprSemantics(index, ctx))],
+      };
+    default: {
+      const _never: never = expr;
+      return _never;
+    }
+  }
+}
+
+function leafExprSemantics(
+  expr: IRExpr,
+  kind: string,
+  semantics: string,
+  helpers: string[],
+  rawOps: string[],
+): WatExprSemantics {
+  return {
+    tag: expr.tag,
+    resultType: expr.resultType,
+    lowering: {
+      kind,
+      semantics,
+      helper: helpers[0] ?? null,
+      helpers,
+      rawOps,
+      notes: [],
+    },
+    children: [],
+  };
+}
+
+function helperExprSemantics(
+  expr: IRExpr,
+  helper: string,
+  semantics: string,
+  children: WatExprSemantics[],
+): WatExprSemantics {
+  return {
+    tag: expr.tag,
+    resultType: expr.resultType,
+    lowering: {
+      kind: "helper_call",
+      semantics,
+      helper,
+      helpers: [helper],
+      rawOps: [],
+      notes: [],
+    },
+    children,
+  };
+}
+
+function collectHelperNamesFromStatements(
+  statements: WatStmtSemantics[],
+  recursion: WatRecursionSemantics,
+): string[] {
+  const names = new Set<string>();
+  for (const stmt of statements) {
+    if (stmt.expr) {
+      for (const name of collectHelperNamesFromExpr(stmt.expr)) {
+        names.add(name);
+      }
+    }
+  }
+  for (const collapse of recursion.collapse) {
+    if (collapse.helper) {
+      names.add(collapse.helper);
+    }
+  }
+  return [...names];
+}
+
+function collectHelperNamesFromExpr(expr: WatExprSemantics): string[] {
+  const names = new Set(expr.lowering.helpers);
+  if (expr.lowering.helper) {
+    names.add(expr.lowering.helper);
+  }
+  for (const child of expr.children) {
+    for (const name of collectHelperNamesFromExpr(child)) {
+      names.add(name);
+    }
+  }
+  return [...names];
+}
+
+function buildHelperSemantics(names: string[]): WatHelperSemantic[] {
+  return [...new Set(names)]
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({
+      name,
+      semantics: describeHelperSemantic(name),
+    }));
+}
+
+function bindingLoopNotes(expr: Extract<IRExpr, { tag: "array_expr" | "sum_expr" }>): string[] {
+  return [
+    "binding extents are forced to be at least 1 via max(extent, 1)",
+    "bindings are iterated in lexicographic order with nested Wasm loops",
+    expr.bindings.length === 0 ? "the body runs exactly once" : `the body runs once per point in the ${expr.bindings.length}-level iteration space`,
+  ];
+}
+
+function arrayConsHelpers(expr: Extract<IRExpr, { tag: "array_cons" }>): string[] {
+  const arrayType = expectArrayType(expr.resultType, "array literal");
+  const helpers = [arrayAllocHelperName(arrayType.dims)];
+  if (expr.elements[0]?.resultType.tag === "array") {
+    helpers.push("jplmm_array_rank", "jplmm_array_dim", "jplmm_array_total_cells", "jplmm_copy_words");
+  } else {
+    helpers.push(...collectStoreHelpers(expr.elements));
+  }
+  return [...new Set(helpers)];
+}
+
+function arrayExprHelpers(expr: Extract<IRExpr, { tag: "array_expr" }>): string[] {
+  const helpers = [
+    arrayAllocHelperName(expectArrayType(expr.resultType, "array comprehension").dims),
+    "jplmm_max_i32",
+  ];
+  if (expr.body.resultType.tag === "array") {
+    helpers.push("jplmm_array_rank", "jplmm_array_dim", "jplmm_array_total_cells", "jplmm_copy_words");
+  } else {
+    helpers.push(...collectStoreHelpers([expr.body]));
+  }
+  return [...new Set(helpers)];
+}
+
+function indexHelpers(expr: Extract<IRExpr, { tag: "index" }>): string[] {
+  const arrayType = expectArrayType(expr.array.resultType, "array indexing");
+  const helpers = [
+    "jplmm_array_rank",
+    "jplmm_array_dim",
+    "jplmm_array_stride",
+    "jplmm_max_i32",
+    "jplmm_clamp_i32",
+  ];
+  if (expr.indices.length === arrayType.dims) {
+    helpers.push(expr.resultType.tag === "float" ? "jplmm_word_load_f32" : "jplmm_word_load_i32");
+  } else {
+    helpers.push("jplmm_array_slice");
+  }
+  return helpers;
+}
+
+function collectStoreHelpers(values: IRExpr[]): string[] {
+  return [...new Set(values.map((value) => value.resultType.tag === "float" ? "jplmm_word_store_f32" : "jplmm_word_store_i32"))];
+}
+
+function arrayAllocHelperName(rank: number): string {
+  return `jplmm_array_alloc_r${rank}`;
+}
+
+function exprHasNonTailRec(expr: IRExpr): boolean {
+  if (expr.tag === "rec") {
+    if (!expr.tailPosition) {
+      return true;
+    }
+    return expr.args.some((arg) => exprHasNonTailRec(arg));
+  }
+  switch (expr.tag) {
+    case "binop":
+    case "total_div":
+    case "total_mod":
+    case "sat_add":
+    case "sat_sub":
+    case "sat_mul":
+      return exprHasNonTailRec(expr.left) || exprHasNonTailRec(expr.right);
+    case "unop":
+    case "sat_neg":
+      return exprHasNonTailRec(expr.operand);
+    case "call":
+      return expr.args.some((arg) => exprHasNonTailRec(arg));
+    case "field":
+      return exprHasNonTailRec(expr.target);
+    case "struct_cons":
+      return expr.fields.some((field) => exprHasNonTailRec(field));
+    case "array_cons":
+      return expr.elements.some((element) => exprHasNonTailRec(element));
+    case "array_expr":
+    case "sum_expr":
+      return expr.bindings.some((binding) => exprHasNonTailRec(binding.expr)) || exprHasNonTailRec(expr.body);
+    case "index":
+      return exprHasNonTailRec(expr.array) || expr.indices.some((index) => exprHasNonTailRec(index));
+    case "nan_to_zero":
+      return exprHasNonTailRec(expr.value);
+    default:
+      return false;
+  }
+}
+
+function describeRecSemantics(expr: Extract<IRExpr, { tag: "rec" }>, ctx: EmitFunctionContext): string {
+  const collapse = "first checks whether the recursive arguments equal the current parameters and collapses to the current result when they do";
+  const fuel = ctx.fuel ? " then checks and decrements explicit recursion fuel" : "";
+  if (expr.tailPosition) {
+    return `${collapse}${fuel} and finally ${ctx.useTailCalls ? "performs a return_call to the tail helper" : "rewrites parameters and branches back to the loop header"}`;
+  }
+  return `${collapse}${fuel} and otherwise calls the public function normally`;
+}
+
+function describeRecNotes(expr: Extract<IRExpr, { tag: "rec" }>, ctx: EmitFunctionContext): string[] {
+  const notes = [
+    "collapse uses per-parameter equality with int/void equality, ULP-1 float equality, or generated aggregate equality helpers",
+  ];
+  if (ctx.fuel) {
+    notes.push(`finite gas is stored as ${ctx.fuel.kind === "param" ? "an extra helper parameter" : "a mutable Wasm local"}`);
+  }
+  if (ctx.aitken && expr.tailPosition) {
+    notes.push("Aitken prediction may rewrite one recursive state argument before the next step");
+  }
+  return notes;
 }
 
 function emitExpr(expr: IRExpr, ctx: EmitFunctionContext): string {
@@ -595,21 +1531,16 @@ function emitIndexExpr(expr: Extract<IRExpr, { tag: "index" }>, ctx: EmitFunctio
   for (let i = 0; i < expr.indices.length; i += 1) {
     const idxLocal = tempIndexedLocal(expr.id, "idx", i);
     lines.push(emitExpr(expr.indices[i]!, ctx));
-    lines.push(`local.set $${idxLocal}`);
-    lines.push(`local.get $${idxLocal}`);
     lines.push("i32.const 0");
-    lines.push("i32.lt_s");
-    lines.push("if");
-    lines.push(indent("unreachable", 1));
-    lines.push("end");
-    lines.push(`local.get $${idxLocal}`);
     lines.push(`local.get $${baseLocal}`);
     lines.push(`i32.const ${i}`);
     lines.push("call $jplmm_array_dim");
-    lines.push("i32.ge_s");
-    lines.push("if");
-    lines.push(indent("unreachable", 1));
-    lines.push("end");
+    lines.push("i32.const 1");
+    lines.push("i32.sub");
+    lines.push("i32.const 0");
+    lines.push("call $jplmm_max_i32");
+    lines.push("call $jplmm_clamp_i32");
+    lines.push(`local.set $${idxLocal}`);
     lines.push(`local.get $${offsetLocal}`);
     lines.push(`local.get $${idxLocal}`);
     lines.push(`local.get $${baseLocal}`);
@@ -696,20 +1627,8 @@ function emitRecCollapseCondition(expr: Extract<IRExpr, { tag: "rec" }>, ctx: Em
 }
 
 function emitParamEquality(param: Param): string {
-  if (param.type.tag === "float") {
-    return "call $jplmm_eq_f32_ulp1";
-  }
-  if (param.type.tag === "int" || param.type.tag === "void") {
-    return "i32.eq";
-  }
-  if (param.type.tag === "named") {
-    return `call $${structEqHelperName(param.type.name)}`;
-  }
-  if (param.type.tag === "array") {
-    return `call $${arrayEqHelperName(param.type)}`;
-  }
-  const _never: never = param.type;
-  throw new Error(`WAT emission for an unexpected parameter type is not implemented: ${_never}`);
+  const lowering = describeParamEqualityLowering(param);
+  return lowering.helper ? `call $${lowering.helper}` : lowering.rawOp;
 }
 
 function emitReturnCurrentRes(retType: Type): string {
@@ -798,6 +1717,158 @@ function emitLutFastPath(fn: IRFunction, layout: LutLayout): string {
   return lines.join("\n");
 }
 
+function emitAitkenPrelude(ctx: EmitFunctionContext): string {
+  const impl = ctx.aitken;
+  if (!impl) {
+    return "";
+  }
+  const state = ctx.fn.params[impl.stateParamIndex];
+  if (!state) {
+    throw new Error(`Aitken lowering state parameter mismatch for '${ctx.fn.name}'`);
+  }
+
+  return [
+    "local.get $jplmm_aitken_count",
+    "i32.eqz",
+    "if",
+    indent(`local.get $${state.name}\nlocal.set $jplmm_aitken_s0`, 1),
+    "else",
+    indent(`local.get $jplmm_aitken_count
+i32.const 1
+i32.eq
+if
+  local.get $${state.name}
+  local.set $jplmm_aitken_s1
+else
+  local.get $jplmm_aitken_count
+  i32.const 2
+  i32.eq
+  if
+    local.get $${state.name}
+    local.set $jplmm_aitken_s2
+  else
+    local.get $jplmm_aitken_s1
+    local.set $jplmm_aitken_s0
+    local.get $jplmm_aitken_s2
+    local.set $jplmm_aitken_s1
+    local.get $${state.name}
+    local.set $jplmm_aitken_s2
+  end
+end`, 1),
+    "end",
+    "local.get $jplmm_aitken_count",
+    "i32.const 3",
+    "i32.lt_s",
+    "if",
+    indent(`local.get $jplmm_aitken_count
+i32.const 1
+i32.add
+local.set $jplmm_aitken_count`, 1),
+    "end",
+  ].join("\n");
+}
+
+function emitAitkenRewrite(ctx: EmitFunctionContext, expr: Extract<IRExpr, { tag: "rec" }>): string {
+  const impl = ctx.aitken;
+  if (!impl) {
+    return "";
+  }
+
+  return [
+    "local.get $jplmm_aitken_count",
+    `i32.const ${impl.afterIterations}`,
+    "i32.ge_s",
+    "if",
+    indent(`local.get $jplmm_aitken_s1
+local.get $jplmm_aitken_s0
+f32.sub
+local.set $jplmm_aitken_delta0
+local.get $jplmm_aitken_s2
+local.get $jplmm_aitken_s1
+f32.sub
+local.set $jplmm_aitken_delta1
+local.get $jplmm_aitken_delta1
+f32.abs
+local.get $jplmm_aitken_delta0
+f32.abs
+f32.lt
+if
+  local.get $jplmm_aitken_delta1
+  local.get $jplmm_aitken_delta0
+  f32.sub
+  local.set $jplmm_aitken_den
+  local.get $jplmm_aitken_den
+  f32.const 0
+  f32.ne
+  local.get $jplmm_aitken_den
+  call $jplmm_isfinite_f32
+  i32.and
+  if
+    local.get $jplmm_aitken_s2
+    local.get $jplmm_aitken_delta1
+    local.get $jplmm_aitken_delta1
+    f32.mul
+    local.get $jplmm_aitken_den
+    f32.div
+    f32.sub
+    call $jplmm_nan_to_zero_f32
+    local.set $jplmm_aitken_pred
+${indent(emitAitkenPredictionGuard(ctx), 2)}
+    if
+      local.get $jplmm_aitken_pred
+      local.set $${recArgLocal(expr.id, impl.stateParamIndex)}
+    end
+  end
+end`, 1),
+    "end",
+  ].join("\n");
+}
+
+function emitAitkenPredictionGuard(ctx: EmitFunctionContext): string {
+  const impl = ctx.aitken;
+  if (!impl) {
+    return "i32.const 0";
+  }
+
+  const lines = [
+    "local.get $jplmm_aitken_pred",
+    "call $jplmm_isfinite_f32",
+    "local.get $jplmm_aitken_pred",
+    "local.get $jplmm_aitken_s2",
+    "f32.sub",
+    "f32.abs",
+    "f32.const 1",
+    "local.get $jplmm_aitken_delta1",
+    "f32.abs",
+    "f32.const 64",
+    "f32.mul",
+    "call $jplmm_max_f32",
+    "f32.le",
+    "i32.and",
+  ];
+
+  if (impl.targetParamIndex !== null) {
+    const target = ctx.fn.params[impl.targetParamIndex];
+    if (!target) {
+      throw new Error(`Aitken lowering target parameter mismatch for '${ctx.fn.name}'`);
+    }
+    lines.push(
+      "local.get $jplmm_aitken_pred",
+      `local.get $${target.name}`,
+      "f32.sub",
+      "f32.abs",
+      "local.get $jplmm_aitken_s2",
+      `local.get $${target.name}`,
+      "f32.sub",
+      "f32.abs",
+      "f32.le",
+      "i32.and",
+    );
+  }
+
+  return lines.join("\n");
+}
+
 function planLutLayouts(artifacts: OptimizeArtifacts | undefined): Map<string, LutLayout> {
   const layouts = new Map<string, LutLayout>();
   if (!artifacts) {
@@ -875,6 +1946,17 @@ function collectLocalDecls(ctx: EmitFunctionContext): string {
 
   if (ctx.fuel?.kind === "local") {
     locals.set(ctx.fuel.name, "i32");
+  }
+
+  if (ctx.aitken) {
+    locals.set("jplmm_aitken_count", "i32");
+    locals.set("jplmm_aitken_s0", "f32");
+    locals.set("jplmm_aitken_s1", "f32");
+    locals.set("jplmm_aitken_s2", "f32");
+    locals.set("jplmm_aitken_delta0", "f32");
+    locals.set("jplmm_aitken_delta1", "f32");
+    locals.set("jplmm_aitken_den", "f32");
+    locals.set("jplmm_aitken_pred", "f32");
   }
 
   for (const stmt of ctx.fn.body) {
@@ -1080,44 +2162,247 @@ function recArgLocal(id: number, index: number): string {
 }
 
 function emitCall(name: string, argExprs: string[], resultType: Type): string {
+  const lowering = describeCallLowering(name, resultType);
   const args = argExprs.join("\n");
+  return [args, ...lowering.instructions].filter(Boolean).join("\n");
+}
+
+type ParamEqualityLowering = {
+  semantics: string;
+  helper: string | null;
+  rawOp: string;
+};
+
+type CallLowering = {
+  kind: string;
+  semantics: string;
+  helper: string | null;
+  helpers: string[];
+  rawOps: string[];
+  notes: string[];
+  instructions: string[];
+};
+
+function describeParamEqualityLowering(param: Param): ParamEqualityLowering {
+  if (param.type.tag === "float") {
+    return {
+      semantics: "uses ULP-1 float equality",
+      helper: "jplmm_eq_f32_ulp1",
+      rawOp: "",
+    };
+  }
+  if (param.type.tag === "int" || param.type.tag === "void") {
+    return {
+      semantics: "uses exact i32 equality",
+      helper: null,
+      rawOp: "i32.eq",
+    };
+  }
+  if (param.type.tag === "named") {
+    return {
+      semantics: `uses generated extensional equality for struct '${param.type.name}'`,
+      helper: structEqHelperName(param.type.name),
+      rawOp: "",
+    };
+  }
+  if (param.type.tag === "array") {
+    return {
+      semantics: "uses generated extensional equality for arrays",
+      helper: arrayEqHelperName(param.type),
+      rawOp: "",
+    };
+  }
+  const _never: never = param.type;
+  throw new Error(`WAT emission for an unexpected parameter type is not implemented: ${_never}`);
+}
+
+function describeCallLowering(name: string, resultType: Type): CallLowering {
   switch (name) {
     case "sqrt":
-      return `${args}\nf32.sqrt`;
+      return {
+        kind: "builtin_call",
+        semantics: "computes square root directly with Wasm floating-point arithmetic",
+        helper: null,
+        helpers: [],
+        rawOps: ["f32.sqrt"],
+        notes: [],
+        instructions: ["f32.sqrt"],
+      };
     case "exp":
-      return `${args}\ncall $jplmm_exp_f32\ncall $jplmm_nan_to_zero_f32`;
     case "sin":
-      return `${args}\ncall $jplmm_sin_f32\ncall $jplmm_nan_to_zero_f32`;
     case "cos":
-      return `${args}\ncall $jplmm_cos_f32\ncall $jplmm_nan_to_zero_f32`;
     case "tan":
-      return `${args}\ncall $jplmm_tan_f32\ncall $jplmm_nan_to_zero_f32`;
     case "asin":
-      return `${args}\ncall $jplmm_asin_f32\ncall $jplmm_nan_to_zero_f32`;
     case "acos":
-      return `${args}\ncall $jplmm_acos_f32\ncall $jplmm_nan_to_zero_f32`;
     case "atan":
-      return `${args}\ncall $jplmm_atan_f32\ncall $jplmm_nan_to_zero_f32`;
     case "log":
-      return `${args}\ncall $jplmm_log_f32\ncall $jplmm_nan_to_zero_f32`;
     case "pow":
-      return `${args}\ncall $jplmm_pow_f32\ncall $jplmm_nan_to_zero_f32`;
-    case "atan2":
-      return `${args}\ncall $jplmm_atan2_f32\ncall $jplmm_nan_to_zero_f32`;
+    case "atan2": {
+      const helper = `jplmm_${name}_f32`;
+      return {
+        kind: "builtin_call",
+        semantics: `delegates to imported math helper '${helper}' and then normalizes NaN to zero`,
+        helper,
+        helpers: [helper, "jplmm_nan_to_zero_f32"],
+        rawOps: [],
+        notes: [],
+        instructions: [`call $${helper}`, "call $jplmm_nan_to_zero_f32"],
+      };
+    }
     case "abs":
-      return `${args}\n${resultType.tag === "float" ? "f32.abs" : "call $jplmm_abs_i32"}`;
+      return resultType.tag === "float"
+        ? {
+            kind: "builtin_call",
+            semantics: "computes floating-point absolute value directly with Wasm",
+            helper: null,
+            helpers: [],
+            rawOps: ["f32.abs"],
+            notes: [],
+            instructions: ["f32.abs"],
+          }
+        : {
+            kind: "builtin_call",
+            semantics: "delegates integer absolute value to the saturating integer helper",
+            helper: "jplmm_abs_i32",
+            helpers: ["jplmm_abs_i32"],
+            rawOps: [],
+            notes: [],
+            instructions: ["call $jplmm_abs_i32"],
+          };
     case "max":
-      return `${args}\ncall $${resultType.tag === "float" ? "jplmm_max_f32" : "jplmm_max_i32"}`;
+      return scalarHelperCall(resultType.tag === "float" ? "jplmm_max_f32" : "jplmm_max_i32", "clamps to the larger operand");
     case "min":
-      return `${args}\ncall $${resultType.tag === "float" ? "jplmm_min_f32" : "jplmm_min_i32"}`;
+      return scalarHelperCall(resultType.tag === "float" ? "jplmm_min_f32" : "jplmm_min_i32", "clamps to the smaller operand");
     case "clamp":
-      return `${args}\ncall $${resultType.tag === "float" ? "jplmm_clamp_f32" : "jplmm_clamp_i32"}`;
+      return scalarHelperCall(resultType.tag === "float" ? "jplmm_clamp_f32" : "jplmm_clamp_i32", "clamps the first operand into the inclusive [lo, hi] interval");
     case "to_float":
-      return `${args}\nf32.convert_i32_s`;
+      return {
+        kind: "builtin_call",
+        semantics: "converts a signed i32 to f32",
+        helper: null,
+        helpers: [],
+        rawOps: ["f32.convert_i32_s"],
+        notes: [],
+        instructions: ["f32.convert_i32_s"],
+      };
     case "to_int":
-      return `${args}\ni32.trunc_sat_f32_s`;
+      return {
+        kind: "builtin_call",
+        semantics: "converts f32 to i32 with Wasm saturating truncation",
+        helper: null,
+        helpers: [],
+        rawOps: ["i32.trunc_sat_f32_s"],
+        notes: [],
+        instructions: ["i32.trunc_sat_f32_s"],
+      };
     default:
-      return `${args}\ncall $${name}`;
+      return {
+        kind: "direct_call",
+        semantics: `calls lowered function '${name}' directly`,
+        helper: null,
+        helpers: [],
+        rawOps: [],
+        notes: [],
+        instructions: [`call $${name}`],
+      };
+  }
+}
+
+function scalarHelperCall(helper: string, semantics: string): CallLowering {
+  return {
+    kind: "builtin_call",
+    semantics,
+    helper,
+    helpers: [helper],
+    rawOps: [],
+    notes: [],
+    instructions: [`call $${helper}`],
+  };
+}
+
+function recursionHelperNames(params: Param[]): string[] {
+  const names = new Set<string>();
+  for (const param of params) {
+    const equality = describeParamEqualityLowering(param);
+    if (equality.helper) {
+      names.add(equality.helper);
+    }
+  }
+  return [...names];
+}
+
+function describeHelperSemantic(name: string): string {
+  switch (name) {
+    case "jplmm_eq_f32_ulp1":
+      return "1-ULP float equality used for recursive collapse and aggregate equality";
+    case "jplmm_total_div_i32":
+      return "totalized signed i32 division that returns 0 when the divisor is 0";
+    case "jplmm_total_mod_i32":
+      return "totalized signed i32 modulus that returns 0 when the divisor is 0";
+    case "jplmm_total_div_f32":
+      return "totalized f32 division that returns 0 when the divisor is 0 and normalizes NaN to 0";
+    case "jplmm_total_mod_f32":
+      return "totalized f32 modulus that returns 0 when the divisor is 0 and normalizes NaN to 0";
+    case "jplmm_nan_to_zero_f32":
+      return "normalizes NaN float values to 0";
+    case "jplmm_sat_add_i32":
+      return "saturating i32 addition";
+    case "jplmm_sat_sub_i32":
+      return "saturating i32 subtraction";
+    case "jplmm_sat_mul_i32":
+      return "saturating i32 multiplication";
+    case "jplmm_sat_neg_i32":
+      return "saturating i32 negation";
+    case "jplmm_abs_i32":
+      return "saturating i32 absolute value";
+    case "jplmm_max_i32":
+      return "signed i32 maximum";
+    case "jplmm_min_i32":
+      return "signed i32 minimum";
+    case "jplmm_clamp_i32":
+      return "signed i32 clamp";
+    case "jplmm_max_f32":
+      return "f32 maximum";
+    case "jplmm_min_f32":
+      return "f32 minimum";
+    case "jplmm_clamp_f32":
+      return "f32 clamp";
+    case "jplmm_alloc_words":
+      return "heap allocation in 32-bit words";
+    case "jplmm_word_load_i32":
+      return "loads an i32 payload word from linear memory";
+    case "jplmm_word_load_f32":
+      return "loads an f32 payload word from linear memory";
+    case "jplmm_word_store_i32":
+      return "stores an i32 payload word into linear memory";
+    case "jplmm_word_store_f32":
+      return "stores an f32 payload word into linear memory";
+    case "jplmm_copy_words":
+      return "copies a contiguous range of payload words in linear memory";
+    case "jplmm_array_rank":
+      return "reads the rank word from an array header";
+    case "jplmm_array_dim":
+      return "reads one dimension from an array header";
+    case "jplmm_array_total_cells":
+      return "computes the total number of array payload cells with saturating multiplication";
+    case "jplmm_array_stride":
+      return "computes the row-major stride for one array dimension";
+    case "jplmm_array_slice":
+      return "materializes a suffix array slice after partial indexing";
+    default:
+      if (/^jplmm_array_alloc_r\d+$/.test(name)) {
+        return "generated array-allocation helper for a fixed rank";
+      }
+      if (name.startsWith("jplmm_eq_struct_")) {
+        return "generated extensional equality helper for a struct";
+      }
+      if (name.startsWith("jplmm_eq_array_")) {
+        return "generated extensional equality helper for an array";
+      }
+      if (/^jplmm_(exp|sin|cos|tan|asin|acos|atan|log|pow|atan2)_f32$/.test(name)) {
+        return "imported math helper returning an f32";
+      }
+      return "backend runtime/helper function";
   }
 }
 
@@ -1218,13 +2503,9 @@ function emitBindingLoopTree(
   const loopLabel = `${extentLocal}_loop`;
   const lines = [
     emitExpr(binding.expr, ctx),
+    "i32.const 1",
+    "call $jplmm_max_i32",
     `local.set $${extentLocal}`,
-    `local.get $${extentLocal}`,
-    "i32.const 0",
-    "i32.le_s",
-    "if",
-    indent("unreachable", 1),
-    "end",
   ];
   if (dimLocals[index]) {
     lines.push(`local.get $${dimLocals[index]}`);
@@ -1499,12 +2780,12 @@ function dedupeTypes(types: Extract<Type, { tag: "array" }>[]): Extract<Type, { 
   return out;
 }
 
-function emitHelpers(program: IRProgram, _heapBase: number): string {
+function emitHelpers(program: IRProgram, heapBase: number, exportRuntimeHelpers: boolean): string {
   const arrayTypes = dedupeTypes(collectArrayTypes(program));
   const maxRank = arrayTypes.reduce((acc, type) => Math.max(acc, type.dims), 0);
   const structHelpers = program.structs.map((struct) => emitWasmStructEqualityHelper(struct)).join("\n\n");
   const arrayHelpers = arrayTypes.map((type) => emitWasmArrayEqualityHelper(type)).join("\n\n");
-  return [emitCoreHelpers(), emitHeapHelpers(), emitWasmArrayAllocHelpers(maxRank), structHelpers, arrayHelpers]
+  return [emitCoreHelpers(), emitHeapHelpers(heapBase, exportRuntimeHelpers), emitWasmArrayAllocHelpers(maxRank), structHelpers, arrayHelpers]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -1631,6 +2912,16 @@ function emitCoreHelpers(): string {
   f32.eq
   select)
 
+(func $jplmm_isfinite_f32 (param $x f32) (result i32)
+  local.get $x
+  local.get $x
+  f32.eq
+  local.get $x
+  f32.abs
+  f32.const inf
+  f32.lt
+  i32.and)
+
 (func $jplmm_sat_add_i32 (param $a i32) (param $b i32) (result i32)
   local.get $a
   i64.extend_i32_s
@@ -1754,8 +3045,13 @@ function emitMathImports(): string {
 `.trim();
 }
 
-function emitHeapHelpers(): string {
+function emitHeapHelpers(heapBase: number, exportRuntimeHelpers: boolean): string {
+  const resetExport = exportRuntimeHelpers ? ` (export "__jplmm_reset_heap")` : "";
   return `
+(func $jplmm_reset_heap${resetExport}
+  i32.const ${heapBase}
+  global.set $jplmm_heap_top)
+
 (func $jplmm_alloc_bytes (param $bytes i32) (result i32)
   (local $base i32) (local $aligned i32) (local $needed i32) (local $capacity i32) (local $grow i32)
   global.get $jplmm_heap_top
@@ -2275,6 +3571,16 @@ function indent(text: string, depth: number): string {
   return text
     .split("\n")
     .map((line) => `${prefix}${line}`)
+    .join("\n");
+}
+
+function emitModuleComments(comments: string[] | undefined): string {
+  if (!comments || comments.length === 0) {
+    return "";
+  }
+  return comments
+    .flatMap((comment) => comment.split("\n"))
+    .map((line) => `;; ${line}`)
     .join("\n");
 }
 

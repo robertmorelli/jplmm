@@ -79,7 +79,7 @@ function executeFunction(
     }
   }
 
-  let currentParams = args.map((arg, idx) => normalizeByType(arg, fn.params[idx]?.type));
+  let currentParams = args.map((arg, idx) => normalizeByType(arg, fn.params[idx]?.type, ctx.structs));
   if (impl?.tag === "linear_speculation") {
     const specArgs = asScalarArgs(currentParams);
     if (specArgs) {
@@ -566,16 +566,13 @@ function indexArrayValue(
   }
   let offset = 0;
   for (let i = 0; i < indices.length; i += 1) {
-    const idx = indices[i]!;
+    const idx = clampIndexToDim(indices[i]!, arrayValue.dims[i]!);
     const dim = arrayValue.dims[i]!;
-    if (idx < 0 || idx >= dim) {
-      throw new Error("Array index out of bounds");
-    }
     offset += idx * strideOf(arrayValue.dims, i);
   }
 
   if (indices.length === arrayValue.dims.length) {
-    return normalizeByType(arrayValue.values[offset]!, resultType, structs);
+    return normalizeByType(arrayValue.values[offset] ?? defaultValueForType(resultType, structs), resultType, structs);
   }
 
   const remainingDims = arrayValue.dims.slice(indices.length);
@@ -754,14 +751,24 @@ function product(values: number[]): number {
 
 function asPositiveExtent(value: RuntimeValue): number {
   const extent = saturateInt(assertNumber(value, "comprehension extent"));
-  if (extent <= 0) {
-    throw new Error("sum/array bounds must be positive");
-  }
-  return extent;
+  return Math.max(1, extent);
 }
 
 function asPositiveIndex(value: RuntimeValue): number {
   return saturateInt(assertNumber(value, "array index"));
+}
+
+function clampIndexToDim(index: number, dim: number): number {
+  if (dim <= 1) {
+    return 0;
+  }
+  if (index < 0) {
+    return 0;
+  }
+  if (index >= dim) {
+    return dim - 1;
+  }
+  return index;
 }
 
 function saturateInt(value: number): number {

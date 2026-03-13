@@ -1,0 +1,192 @@
+{
+  "name": "@jplmm/vscode-extension",
+  "displayName": "JPLMM",
+  "description": "VS Code support for JPLMM with highlighting, navigation, completions, diagnostics, inline results, and run commands.",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/extension.cjs",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:jplmm",
+    "onCommand:jplmm.runFile",
+    "onCommand:jplmm.debugWat",
+    "onCommand:jplmm.debugSemantics",
+    "onCommand:jplmm.showWat",
+    "workspaceContains:**/*.jplmm"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "jplmm",
+        "aliases": [
+          "JPLMM",
+          "JPL--"
+        ],
+        "extensions": [
+          ".jplmm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "jplmm",
+        "scopeName": "source.jplmm",
+        "path": "./syntaxes/jplmm.tmGrammar.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "jplmm.runFile",
+        "title": "JPLMM: Run Active File",
+        "icon": "$(run)"
+      },
+      {
+        "command": "jplmm.debugWat",
+        "title": "JPLMM: Debug Active File (WAT)",
+        "icon": "$(debug)"
+      },
+      {
+        "command": "jplmm.debugSemantics",
+        "title": "JPLMM: Debug Active File (Semantics)",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "jplmm.showWat",
+        "title": "JPLMM: Show WAT For Active File (Legacy)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "jplmm.runFile",
+          "when": "editorLangId == jplmm",
+          "group": "navigation"
+        },
+        {
+          "command": "jplmm.debugWat",
+          "when": "editorLangId == jplmm",
+          "group": "navigation@1"
+        },
+        {
+          "command": "jplmm.debugSemantics",
+          "when": "editorLangId == jplmm",
+          "group": "navigation@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "jplmm.runFile",
+          "when": "resourceExtname == .jplmm",
+          "group": "navigation"
+        },
+        {
+          "command": "jplmm.debugWat",
+          "when": "resourceExtname == .jplmm",
+          "group": "navigation@1"
+        },
+        {
+          "command": "jplmm.debugSemantics",
+          "when": "resourceExtname == .jplmm",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "jplmm.runFile",
+        "key": "f5",
+        "when": "editorLangId == jplmm && editorTextFocus && !inDebugMode"
+      }
+    ],
+    "configuration": {
+      "title": "JPLMM",
+      "properties": {
+        "jplmm.run.mode": {
+          "type": "string",
+          "enum": [
+            "run",
+            "verify",
+            "typecheck"
+          ],
+          "default": "run",
+          "description": "Pipeline used by the Run Active File command."
+        },
+        "jplmm.run.clearOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Clear the JPLMM output channel before each run."
+        },
+        "jplmm.editor.functionAnnotations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show per-function source complexity and canonical line-coverage annotations above function definitions."
+        },
+        "jplmm.editor.inlineOutResults": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline results for safe top-level out expressions while editing."
+        },
+        "jplmm.editor.inlineVariableRanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline optimizer-proved scalar ranges on parameters and let bindings."
+        },
+        "jplmm.run.verifyBeforeRun": {
+          "type": "boolean",
+          "default": true,
+          "description": "When run mode is selected, verify rad/gas proof obligations before executing the file."
+        },
+        "jplmm.run.experimental": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable research-grade optimizer passes for commands that use the optimizer. This is on by default."
+        },
+        "jplmm.run.safe": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disable all optional optimizer passes for run/debug WAT commands."
+        },
+        "jplmm.run.disablePasses": {
+          "type": "array",
+          "default": [],
+          "description": "Optimizer passes to disable for run/debug WAT commands.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "guard_elimination",
+              "closed_form",
+              "lut_tabulation",
+              "aitken",
+              "linear_speculation"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/extension.cjs --sourcemap",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bash ../../tools/run-vitest.sh",
+    "lint": "echo \"No lint yet for vscode-extension\""
+  },
+  "dependencies": {
+    "@jplmm/cli": "file:../cli",
+    "@jplmm/frontend": "file:../frontend",
+    "@jplmm/grammar": "file:../grammar",
+    "@jplmm/ir": "file:../ir",
+    "@jplmm/optimize": "file:../optimize",
+    "@jplmm/verify": "file:../verify"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.110.0"
+  }
+}

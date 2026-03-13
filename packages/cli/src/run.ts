@@ -65,6 +65,18 @@ export function executeTopLevelProgram(
     wroteFiles: [],
   };
 
+  const mainFn = findImplicitMain(program);
+  if (mainFn && !hasExplicitTopLevelExecution(program)) {
+    const value = executeProgram(ctx.irProgram, mainFn.name, [], { artifacts: ctx.artifacts }).value;
+    if (mainFn.retType.tag !== "void") {
+      ctx.output.push(formatValue(value));
+    }
+    return {
+      output: ctx.output,
+      wroteFiles: ctx.wroteFiles,
+    };
+  }
+
   for (const cmd of program.commands) {
     executeCmd(cmd, ctx);
   }
@@ -73,6 +85,41 @@ export function executeTopLevelProgram(
     output: ctx.output,
     wroteFiles: ctx.wroteFiles,
   };
+}
+
+function findImplicitMain(program: Program): Extract<Cmd, { tag: "fn_def" }> | null {
+  for (const cmd of program.commands) {
+    const fn = unwrapTimedDefinition(cmd, "fn_def");
+    if (fn && fn.name === "main" && fn.params.length === 0) {
+      return fn;
+    }
+  }
+  return null;
+}
+
+function hasExplicitTopLevelExecution(program: Program): boolean {
+  return program.commands.some((cmd) => {
+    if (cmd.tag === "fn_def" || cmd.tag === "struct_def") {
+      return false;
+    }
+    if (cmd.tag === "time" && (cmd.cmd.tag === "fn_def" || cmd.cmd.tag === "struct_def")) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function unwrapTimedDefinition<T extends "fn_def" | "struct_def">(
+  cmd: Cmd,
+  tag: T,
+): Extract<Cmd, { tag: T }> | null {
+  if (cmd.tag === tag) {
+    return cmd as Extract<Cmd, { tag: T }>;
+  }
+  if (cmd.tag === "time" && cmd.cmd.tag === tag) {
+    return cmd.cmd as Extract<Cmd, { tag: T }>;
+  }
+  return null;
 }
 
 function executeCmd(cmd: Cmd, ctx: ExecutorContext): void {
@@ -306,7 +353,7 @@ function iterateBindings(
   locals: Map<string, RuntimeValue>,
   onPoint: (scope: Map<string, RuntimeValue>, indices: number[], extents: number[]) => void,
 ): void {
-  const extents = bindings.map((binding) => Math.max(0, assertInt(evalExpr(binding.expr, ctx, locals), "binding extent")));
+  const extents = bindings.map((binding) => Math.max(1, assertInt(evalExpr(binding.expr, ctx, locals), "binding extent")));
   const scope = new Map(locals);
   const indices: number[] = [];
 
@@ -358,11 +405,12 @@ function arrayGet(array: RuntimeArrayValue, indices: number[]): RuntimeValue {
   if (indices.length > array.dims.length) {
     throw new Error("Too many indices for array access");
   }
-  const offset = linearOffset(array.dims, indices);
+  const clampedIndices = indices.map((index, idx) => clampIndex(index, array.dims[idx] ?? 1));
+  const offset = linearOffset(array.dims, clampedIndices);
   if (indices.length === array.dims.length) {
-    return array.values[offset]!;
+    return array.values[offset] ?? defaultValueForType(array.elementType);
   }
-  const sliceDims = array.dims.slice(indices.length);
+  const sliceDims = array.dims.slice(clampedIndices.length);
   const sliceSize = product(sliceDims);
   const start = offset;
   const end = start + sliceSize;
@@ -374,30 +422,6 @@ function arrayGet(array: RuntimeArrayValue, indices: number[]): RuntimeValue {
   };
 }
 
-function arraySet(array: RuntimeArrayValue, indices: number[], value: RuntimeValue): RuntimeArrayValue {
-  if (indices.length > array.dims.length) {
-    throw new Error("Too many indices for array assignment");
-  }
-  const nextValues = array.values.slice();
-  const offset = linearOffset(array.dims, indices);
-  if (indices.length === array.dims.length) {
-    nextValues[offset] = normalizeByType(value, array.elementType);
-    return { ...array, values: nextValues };
-  }
-
-  if (!isArrayValue(value)) {
-    throw new Error("Slice assignment requires an array value");
-  }
-  const sliceDims = array.dims.slice(indices.length);
-  if (!sameDims(sliceDims, value.dims)) {
-    throw new Error("Slice assignment rank mismatch");
-  }
-  const sliceSize = product(sliceDims);
-  const normalized = value.values.map((entry) => normalizeByType(entry, array.elementType));
-  nextValues.splice(offset, sliceSize, ...normalized);
-  return { ...array, values: nextValues };
-}
-
 function linearOffset(dims: number[], indices: number[]): number {
   let stride = 1;
   let offset = 0;
@@ -407,6 +431,19 @@ function linearOffset(dims: number[], indices: number[]): number {
     stride *= dims[i]!;
   }
   return offset;
+}
+
+function clampIndex(index: number, dim: number): number {
+  if (dim <= 1) {
+    return 0;
+  }
+  if (index < 0) {
+    return 0;
+  }
+  if (index >= dim) {
+    return dim - 1;
+  }
+  return index;
 }
 
 function evalUnary(op: string, operand: RuntimeValue, type: Type): RuntimeValue {
@@ -507,6 +544,21 @@ function normalizeByType(value: RuntimeValue, type: Type): RuntimeValue {
   return 0;
 }
 
+function defaultValueForType(type: Type): RuntimeValue {
+  if (type.tag === "int" || type.tag === "float" || type.tag === "void") {
+    return 0;
+  }
+  if (type.tag === "named") {
+    return { kind: "struct", typeName: type.name, fields: [] };
+  }
+  return {
+    kind: "array",
+    elementType: type.element,
+    dims: new Array(type.dims).fill(0),
+    values: [],
+  };
+}
+
 function inferFieldType(
   value: RuntimeStructValue,
   fieldName: string,
@@ -602,7 +654,7 @@ function readImageFile(filename: string): { meta: { width: number; height: numbe
     .filter(Boolean);
   const magic = tokens.shift();
   if (magic !== "P2" && magic !== "P3") {
-    throw new Error(`Unsupported image format '${magic ?? ""}'. Use ASCII P2/P3 PPM/PGM.`);
+    throw new Error(`Unsupported image format '${magic ?? ""}'. Use BMP or ASCII P2/P3 PPM/PGM.`);
   }
   const width = Number(tokens.shift() ?? "0");
   const height = Number(tokens.shift() ?? "0");

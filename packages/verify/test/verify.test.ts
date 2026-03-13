@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { runFrontend } from "@jplmm/frontend";
 
+import { analyzeProgramMetrics } from "../src/metrics.ts";
 import { verifyProgram } from "../src/verify.ts";
 
 function verify(src: string) {
@@ -151,5 +152,101 @@ describe("verifyProgram", () => {
     expect(proofMap.get("settle")?.status).toBe("verified");
     expect(proofMap.get("settle")?.method).toBe("smt");
     expect(diagnostics).toHaveLength(0);
+  });
+
+  it("checks changed array arguments semantically instead of rejecting them as opaque", () => {
+    const { proofMap, diagnostics } = verify(`
+      fn shrink(buf:int[], n:int): int {
+        ret n;
+        let next = array[i:1] n;
+        ret rec(next, max(0, n - 1));
+        rad abs(n) + 1;
+      }
+    `);
+    expect(proofMap.get("shrink")?.status).toBe("rejected");
+    const failure = diagnostics.find((d) => d.code === "VERIFY_PROOF_FAIL");
+    expect(failure).toBeDefined();
+    expect(failure?.message).toContain("counterexample:");
+    expect(failure?.message).not.toContain("non-scalar recursive arguments changed");
+  });
+
+  it("reduces array comprehensions to read functions inside rad expressions", () => {
+    const { proofMap, diagnostics } = verify(`
+      fn shrink(n:int): int {
+        let buf = array[i:1] n;
+        ret n;
+        ret rec(max(0, n - 1));
+        rad buf[0];
+      }
+    `);
+    expect(proofMap.get("shrink")?.status).toBe("verified");
+    expect(proofMap.get("shrink")?.method).toBe("smt");
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  it("reduces array literals to semantic reads inside rad expressions", () => {
+    const { proofMap, diagnostics } = verify(`
+      fn shrink(n:int): int {
+        let buf = [n, max(0, n - 1)];
+        ret n;
+        ret rec(max(0, n - 1));
+        rad buf[0];
+      }
+    `);
+    expect(proofMap.get("shrink")?.status).toBe("verified");
+    expect(proofMap.get("shrink")?.method).toBe("smt");
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  it("tracks struct field semantics across recursive arguments", () => {
+    const { proofMap, diagnostics } = verify(`
+      struct Pair { left:int, right:int }
+
+      fn settle(p:Pair): Pair {
+        ret p;
+        ret rec(Pair { p.left, max(0, p.right - 1) });
+        rad p.right;
+      }
+    `);
+    expect(proofMap.get("settle")?.status).toBe("verified");
+    expect(proofMap.get("settle")?.method).toBe("smt");
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  it("rejects constant rad expressions that cannot strictly decrease", () => {
+    const { proofMap, diagnostics } = verify(`
+      fn my_sqrt(x: float, g: float): float {
+        ret (g + x / g) / 2.0;
+        rad 1;
+        ret rec(x, res);
+      }
+    `);
+    expect(proofMap.get("my_sqrt")?.status).toBe("rejected");
+    const failure = diagnostics.find((d) => d.code === "VERIFY_PROOF_FAIL");
+    expect(failure).toBeDefined();
+    expect(failure?.message).toContain("counterexample:");
+    expect(failure?.message).toContain("x =");
+    expect(failure?.message).toContain("next g =");
+    expect(failure?.message).toContain("|rad|");
+  });
+
+  it("reports source complexity and canonical witnesses", () => {
+    const frontend = runFrontend(`
+      struct Pair { left:int, right:int }
+
+      fn f(n:int, pair:Pair, grid:int[][]): int {
+        ret n;
+        ret rec(max(0, n - 1)) + rec(n);
+        rad n;
+      }
+    `);
+    const metrics = analyzeProgramMetrics(frontend.program);
+
+    expect(metrics.get("f")).toEqual({
+      sourceComplexity: 3,
+      recSites: 2,
+      canonicalWitness: "f(0, Pair { 0, 0 }, [[0]])",
+      coarseTotalCallBound: "sum_{i=0..2^32} 2^i",
+    });
   });
 });

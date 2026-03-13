@@ -84,6 +84,20 @@ describe("resolveProgram", () => {
     expect(ds.some((d) => d.code === "GAS_INF" && d.severity === "warning")).toBe(true);
   });
 
+  it("warns when rec uses the current parameters unchanged", () => {
+    const src = `
+      fun f(x:int, y:int): int {
+        ret x + y;
+        ret rec(x, y);
+        rad x;
+      }
+    `;
+    const diagnostic = resolve(src).find((d) => d.code === "REC_STATIC_COLLAPSE");
+
+    expect(diagnostic?.severity).toBe("warning");
+    expect(src.slice(diagnostic!.start, diagnostic!.end)).toBe("rec(x, y)");
+  });
+
   it("flags direct self-call via name", () => {
     const ds = resolve(`
       fn f(x:int): int {
@@ -119,6 +133,22 @@ describe("resolveProgram", () => {
     expect(ds.some((d) => d.code === "DUP_FN")).toBe(true);
   });
 
+  it("allows ref definitions to follow an earlier baseline definition", () => {
+    const ds = resolve(`
+      fun f(x:int): int { ret x; }
+      ref f(y:int): int { ret y; }
+    `);
+    expect(ds.some((d) => d.code === "DUP_FN")).toBe(false);
+    expect(ds.some((d) => d.code === "REF_NO_BASE")).toBe(false);
+  });
+
+  it("flags ref definitions without an earlier baseline", () => {
+    const ds = resolve(`
+      ref f(x:int): int { ret x; }
+    `);
+    expect(ds.some((d) => d.code === "REF_NO_BASE")).toBe(true);
+  });
+
   it("flags duplicate parameters", () => {
     const ds = resolve(`
       fn f(x:int, x:int): int {
@@ -134,6 +164,78 @@ describe("resolveProgram", () => {
       let x = 2;
     `);
     expect(ds.some((d) => d.code === "SHADOW")).toBe(true);
+  });
+
+  it("attaches unbound-variable diagnostics to the offending reference", () => {
+    const src = `
+      fun f(x:int): int {
+        ret missing;
+      }
+    `;
+    const diagnostic = resolve(src).find((d) => d.code === "UNBOUND_VAR");
+
+    expect(diagnostic).toBeDefined();
+    expect(src.slice(diagnostic!.start, diagnostic!.end)).toBe("missing");
+  });
+
+  it("flags unused local lets", () => {
+    const ds = resolve(`
+      fn f(x:int): int {
+        let y = x + 1;
+        ret x;
+      }
+    `);
+    expect(ds.some((d) => d.code === "UNUSED_LET")).toBe(true);
+  });
+
+  it("flags unused top-level lets", () => {
+    const ds = resolve(`
+      let x = 1;
+      print "ready";
+    `);
+    expect(ds.some((d) => d.code === "UNUSED_LET")).toBe(true);
+  });
+
+  it("requires main to be zero-argument", () => {
+    const ds = resolve(`
+      fn main(x:int): int {
+        ret x;
+      }
+    `);
+    expect(ds.some((d) => d.code === "MAIN_ARITY")).toBe(true);
+  });
+
+  it("flags ret values overwritten before rec or res can observe them", () => {
+    const ds = resolve(`
+      fn f(x:int): int {
+        ret x;
+        let y = x + 1;
+        ret y;
+      }
+    `);
+    expect(ds.some((d) => d.code === "IGNORED_RET")).toBe(true);
+  });
+
+  it("allows res to observe the previous ret before the next ret", () => {
+    const ds = resolve(`
+      fn f(x:int): int {
+        ret x;
+        let y = res + 1;
+        ret y;
+      }
+    `);
+    expect(ds.some((d) => d.code === "IGNORED_RET")).toBe(false);
+  });
+
+  it("allows rec to observe the previous ret at the next ret", () => {
+    const ds = resolve(`
+      fn f(x:int): int {
+        ret x;
+        ret rec(x + 1);
+        gas 1;
+      }
+    `);
+    expect(ds.some((d) => d.code === "IGNORED_RET")).toBe(false);
   });
 
   it("resolves structs and comprehension binders in order", () => {
@@ -152,7 +254,7 @@ describe("resolveProgram", () => {
   it("binds read image tuple targets for later commands", () => {
     const ds = resolve(`
       read image "demo.ppm" to (w, h, img);
-      show img[0][0][0] + w + h;
+      out img[0][0][0] + w + h;
     `);
     expect(ds).toHaveLength(0);
   });

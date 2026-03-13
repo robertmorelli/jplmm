@@ -84,7 +84,14 @@ The following JPL keywords are removed:
 
 The following keywords are added:
 
-`ret`, `res`, `rec`, `rad`, `gas`, `inf`
+`fun`, `def`, `ref`, `out`, `ret`, `res`, `rec`, `rad`, `gas`, `inf`
+
+The preferred baseline definition form is `fun`. `def` is the optimizer-policy
+variant that blocks research-grade rewrites for that function. `ref` introduces
+a refinement candidate that must be proven equivalent to the currently accepted
+definition of the same name or the program is rejected.
+
+Legacy aliases remain accepted for compatibility with older source files.
 
 ### Unchanged
 
@@ -185,14 +192,14 @@ statically: `res` becomes available after the first `ret` in the function body,
 and any reference to `res` that appears before that first `ret` is rejected.
 
 ```
-fn bad(x : int) : int {
+fun bad(x : int) : int {
     let y = res + 1       // ERROR: res used before any ret
     ret y
 }
 ```
 
 ```
-fn good(x : int) : int {
+fun good(x : int) : int {
     ret x * x             // res is now initialized
     ret res + 1           // OK: res holds x * x
 }
@@ -213,7 +220,7 @@ that follows at least one `ret` statement in the function body. This is a
 compile-time error:
 
 ```
-fn bad(x : int) : int {
+fun bad(x : int) : int {
     ret rec(x - 1)          // ERROR: no prior ret, res has no meaningful value
     rad x
 }
@@ -222,7 +229,7 @@ fn bad(x : int) : int {
 This is correct:
 
 ```
-fn good(x : int) : int {
+fun good(x : int) : int {
     ret clamp(x, 0, 1)      // res now has a base case value
     ret rec(max(0, x - 1))   // OK: rec can collapse to res
     rad x
@@ -373,7 +380,7 @@ counts loop iterations for tail-position `rec`; for non-tail `rec`, each
 spawned instance has independent fuel.
 
 ```
-fn collatz(x : int) : int {
+fun collatz(x : int) : int {
     let even_step = x / 2
     let odd_step  = 3 * x + 1
     // x % 2 is 0 or 1; use it to blend the two steps without conditionals
@@ -396,7 +403,7 @@ but the termination is not structurally proven. The compiler emits no warnings.
 is a genuine Turing-complete escape hatch.
 
 ```
-fn spin(x : int) : int {
+fun spin(x : int) : int {
     ret x
     ret rec(x + 1)
     gas inf
@@ -624,11 +631,22 @@ For float division and modulus, canonical lowering first enforces
 `x / 0.0 = 0.0` and `x % 0.0 = 0.0`, then applies NaN-to-zero as needed. This
 keeps the float domain NaNless while remaining branchless.
 
-**Consequence:** JPL-- has no runtime errors from arithmetic. The only runtime
-errors are array out-of-bounds, `sum`/`array` with non-positive bounds, and I/O
-failures. Division by zero, which is a runtime error in JPL, is a defined
-operation in JPL--. `NaN`, which is a silent poison in IEEE 754, does not exist
-in JPL--.
+**Consequence:** JPL-- has no runtime errors from arithmetic or array-bound
+handling. Array indexing clamps to the nearest valid element, and `sum`/`array`
+comprehension bounds clamp to at least `1`. The remaining runtime failures are
+I/O failures and implementation-defined shape mismatches for values that violate
+the language's rectangular-array intent. Division by zero, which is a runtime
+error in JPL, is a defined operation in JPL--. `NaN`, which is a silent poison
+in IEEE 754, does not exist in JPL--.
+
+If a `sum` or `array` bound is provably a compile-time constant below `1`, the
+compiler must emit a hard error:
+
+```
+const value clamped to 1
+```
+
+Dynamic bounds still clamp at runtime.
 
 ### Fixed-Point Epsilon
 
@@ -674,16 +692,24 @@ JPL-- inherits JPL's command syntax with the following changes:
 
 ### Modified Commands
 
-Function syntax gains `ret`, `res`, `rec`, and `rad`:
+Function syntax gains `ret`, `res`, `rec`, `rad`, and refinement definitions:
 
 ```
-cmd  : fn <variable> ( <binding> , ... ) : <type> { ;
+cmd  : ( fun | def | ref ) <variable> ( <binding> , ... ) : <type> { ;
            <stmt> ; ... ;
        }
 ```
 
 Where `<stmt>` now includes `ret` and `rad` statements, and expressions within
 the body may use `res` and `rec`.
+
+For `ref`, the definition must:
+
+- appear after an earlier accepted definition of the same name
+- keep the same parameter and return types
+- be proven semantically equivalent by the compiler
+
+If the proof fails, compilation fails instead of silently choosing one body.
 
 ### Retained Commands
 
@@ -693,9 +719,9 @@ cmd  : read image <string> to <argument>
      | struct <variable> { ... }
      | let <lvalue> = <expr>
      | print <string>
-     | show <expr>
+     | out <expr>
      | time <cmd>
-     | fn <variable> ( <binding> , ... ) : <type> { ... }
+     | ( fun | def | ref ) <variable> ( <binding> , ... ) : <type> { ... }
 ```
 
 
@@ -778,7 +804,7 @@ Example Programs
 ### Square Root (Babylonian Method)
 
 ```
-fn sqrt_iter(x : float, g : float) : float {
+fun sqrt_iter(x : float, g : float) : float {
     ret (g + max(x, 0.0) / g) / 2.0
     rad g - res
     ret rec(max(x, 0.0), res)
@@ -800,7 +826,7 @@ contraction with ratio `(g² - x)² / (4(g² + x)²)` < 1, which holds for all
 ### Fibonacci
 
 ```
-fn fib(x : int) : int {
+fun fib(x : int) : int {
     ret clamp(x, 0, 1)
     ret max(res, rec(max(0, x - 1)) + rec(max(0, x - 2)))
     rad x
@@ -821,7 +847,7 @@ Trivially true.
 ### Absolute Value (Without Conditionals)
 
 ```
-fn my_abs(x : int) : int {
+fun my_abs(x : int) : int {
     ret max(x, -x)
 }
 ```
@@ -831,7 +857,7 @@ No `rec`, no `rad` needed. This is a pure non-recursive function.
 ### Integer Square Root (Floor)
 
 ```
-fn isqrt(x : int, g : int) : int {
+fun isqrt(x : int, g : int) : int {
     let next = (g + x / max(g, 1)) / 2
     ret max(next, 1)
     rad g - res
@@ -842,7 +868,7 @@ fn isqrt(x : int, g : int) : int {
 ### GCD (Euclidean Algorithm)
 
 ```
-fn gcd(a : int, b : int) : int {
+fun gcd(a : int, b : int) : int {
     ret a
     ret rec(min(abs(a), abs(b)), max(abs(a), abs(b)) % min(abs(a), abs(b)))
     rad b
@@ -859,7 +885,7 @@ Euclidean algorithm proceeds with strictly decreasing `b`.
 ### Non-Terminating Program (REJECTED)
 
 ```
-fn diverge(x : int) : int {
+fun diverge(x : int) : int {
     ret rec(x + 1)
     rad x
 }
@@ -909,9 +935,12 @@ Compiler Command Line Interface
 JPL-- inherits JPL's CLI with one addition:
 
 - `-v` (verify): Perform lexing, parsing, type checking, and termination
-  verification. Print each function's proof obligations and their status:
-  `VERIFIED` (with method: structural, symbolic, or SMT) for `rad` functions,
-  `BOUNDED` for `gas N` functions, or `UNVERIFIED` for `gas inf` functions.
+  verification. Print each recursive function's proof obligations and their
+  status: `VERIFIED` (with method: structural, symbolic, or SMT) for `rad`
+  functions, `BOUNDED` for `gas N` functions, or `UNVERIFIED` for `gas inf`
+  functions. The tool also prints a simple source-level complexity metric
+  (`1 + number of rec sites`) and a canonical line-coverage witness call for
+  each function.
 
 All other flags (`-l`, `-p`, `-t`, `-i`, `-s`) behave as in JPL.
 

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { tmpdir } from "node:os";
 
 import { describe, expect, it } from "vitest";
 
@@ -145,7 +146,7 @@ function probeDafnyTargets(): DafnyTargetProbe[] {
 }
 
 function probeDafnyTarget(target: DafnyTarget): DafnyTargetProbe {
-  const root = mkdtempSync(join(process.cwd(), `.dafny-probe-${target}-`));
+  const root = mkdtempSync(join(tmpdir(), `jplmm-dafny-probe-${target}-`));
   const sourcePath = join(root, "probe.dfy");
   const outputPath = join(root, `probe-${target}`);
   const env = dafnyEnv(root);
@@ -197,7 +198,7 @@ function hasCommand(command: string): boolean {
 }
 
 function runDafnyCase(dafnyFile: string, caseName: string, target: DafnyTarget): DafnyTargetResult {
-  const root = mkdtempSync(join(process.cwd(), `.dafny-${caseName}-${target}-`));
+  const root = mkdtempSync(join(tmpdir(), `jplmm-dafny-${caseName}-${target}-`));
   const outputPath = join(root, `${caseName}-${target}`);
   const env = dafnyEnv(root);
 

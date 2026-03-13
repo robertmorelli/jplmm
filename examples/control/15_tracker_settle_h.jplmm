@@ -1,6 +1,6 @@
 struct Tracker { pos:float, vel:float, target:float, gain:float }
 
-fn step(state:Tracker): Tracker {
+fun step(state:Tracker): Tracker {
   ret Tracker {
     (state.pos * state.gain + state.target) / (state.gain + 1.0),
     (state.vel + (state.target - state.pos) / 6.0) / 2.0,
@@ -9,13 +9,24 @@ fn step(state:Tracker): Tracker {
   };
 }
 
-fn iterate(state:Tracker): Tracker {
-  ret state;
-  ret rec(step(state));
-  gas 6;
+fun blend_tracker(current:Tracker, next:Tracker, steps:int): Tracker {
+  let gate = to_float(min(1, max(0, steps)));
+  ret Tracker {
+    current.pos + gate * (next.pos - current.pos),
+    current.vel + gate * (next.vel - current.vel),
+    current.target + gate * (next.target - current.target),
+    current.gain + gate * (next.gain - current.gain)
+  };
 }
 
-fn score(state:Tracker): float {
-  let out = iterate(state);
+fun iterate(state:Tracker, steps:int): Tracker {
+  let next = blend_tracker(state, step(state), steps);
+  ret state;
+  ret rec(next, max(0, steps - 1));
+  rad steps;
+}
+
+fun score(state:Tracker): float {
+  let out = iterate(state, 6);
   ret out.pos + out.vel / 4.0;
 }

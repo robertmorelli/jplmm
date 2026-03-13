@@ -1,68 +1,71 @@
-import type { BinOp, GasLimit, NodeId, Type, UnOp } from "./types";
+import type { BinOp, GasLimit, NodeId, SourceSpan, Type, UnOp } from "./types";
 
-export type Binding = {
+export type FunctionKeyword = "fun" | "fn" | "def" | "ref";
+
+export type Binding = SourceSpan & {
   name: string;
   expr: Expr;
 };
 
-export type Param = {
+export type Param = SourceSpan & {
   name: string;
   type: Type;
 };
 
-export type StructField = {
+export type StructField = SourceSpan & {
   name: string;
   type: Type;
 };
 
 export type LValue =
-  | { tag: "var"; name: string }
-  | { tag: "tuple"; items: LValue[] }
-  | { tag: "field"; base: string; field: string };
+  | (SourceSpan & { tag: "var"; name: string })
+  | (SourceSpan & { tag: "tuple"; items: LValue[] })
+  | (SourceSpan & { tag: "field"; base: string; field: string });
 
 export type Argument =
-  | { tag: "var"; name: string }
-  | { tag: "tuple"; items: Argument[] };
+  | (SourceSpan & { tag: "var"; name: string })
+  | (SourceSpan & { tag: "tuple"; items: Argument[] });
 
 export type Expr =
-  | { tag: "int_lit"; value: number; id: NodeId }
-  | { tag: "float_lit"; value: number; id: NodeId }
-  | { tag: "void_lit"; id: NodeId }
-  | { tag: "var"; name: string; id: NodeId }
-  | { tag: "binop"; op: BinOp; left: Expr; right: Expr; id: NodeId }
-  | { tag: "unop"; op: UnOp; operand: Expr; id: NodeId }
-  | { tag: "call"; name: string; args: Expr[]; id: NodeId }
-  | { tag: "index"; array: Expr; indices: Expr[]; id: NodeId }
-  | { tag: "field"; target: Expr; field: string; id: NodeId }
-  | { tag: "struct_cons"; name: string; fields: Expr[]; id: NodeId }
-  | { tag: "array_cons"; elements: Expr[]; id: NodeId }
-  | { tag: "array_expr"; bindings: Binding[]; body: Expr; id: NodeId }
-  | { tag: "sum_expr"; bindings: Binding[]; body: Expr; id: NodeId }
-  | { tag: "res"; id: NodeId }
-  | { tag: "rec"; args: Expr[]; id: NodeId };
+  | (SourceSpan & { tag: "int_lit"; value: number; id: NodeId })
+  | (SourceSpan & { tag: "float_lit"; value: number; id: NodeId })
+  | (SourceSpan & { tag: "void_lit"; id: NodeId })
+  | (SourceSpan & { tag: "var"; name: string; id: NodeId })
+  | (SourceSpan & { tag: "binop"; op: BinOp; left: Expr; right: Expr; id: NodeId })
+  | (SourceSpan & { tag: "unop"; op: UnOp; operand: Expr; id: NodeId })
+  | (SourceSpan & { tag: "call"; name: string; args: Expr[]; id: NodeId })
+  | (SourceSpan & { tag: "index"; array: Expr; indices: Expr[]; id: NodeId })
+  | (SourceSpan & { tag: "field"; target: Expr; field: string; id: NodeId })
+  | (SourceSpan & { tag: "struct_cons"; name: string; fields: Expr[]; id: NodeId })
+  | (SourceSpan & { tag: "array_cons"; elements: Expr[]; id: NodeId })
+  | (SourceSpan & { tag: "array_expr"; bindings: Binding[]; body: Expr; id: NodeId })
+  | (SourceSpan & { tag: "sum_expr"; bindings: Binding[]; body: Expr; id: NodeId })
+  | (SourceSpan & { tag: "res"; id: NodeId })
+  | (SourceSpan & { tag: "rec"; args: Expr[]; id: NodeId });
 
 export type Stmt =
-  | { tag: "let"; lvalue: LValue; expr: Expr; id: NodeId }
-  | { tag: "ret"; expr: Expr; id: NodeId }
-  | { tag: "rad"; expr: Expr; id: NodeId }
-  | { tag: "gas"; limit: GasLimit; id: NodeId };
+  | (SourceSpan & { tag: "let"; lvalue: LValue; expr: Expr; id: NodeId })
+  | (SourceSpan & { tag: "ret"; expr: Expr; id: NodeId })
+  | (SourceSpan & { tag: "rad"; expr: Expr; id: NodeId })
+  | (SourceSpan & { tag: "gas"; limit: GasLimit; id: NodeId });
 
 export type Cmd =
-  | {
+  | (SourceSpan & {
       tag: "fn_def";
+      keyword: FunctionKeyword;
       name: string;
       params: Param[];
       retType: Type;
       body: Stmt[];
       id: NodeId;
-    }
-  | { tag: "let_cmd"; lvalue: LValue; expr: Expr; id: NodeId }
-  | { tag: "struct_def"; name: string; fields: StructField[]; id: NodeId }
-  | { tag: "read_image"; filename: string; target: Argument; id: NodeId }
-  | { tag: "write_image"; expr: Expr; filename: string; id: NodeId }
-  | { tag: "print"; message: string; id: NodeId }
-  | { tag: "show"; expr: Expr; id: NodeId }
-  | { tag: "time"; cmd: Cmd; id: NodeId };
+    })
+  | (SourceSpan & { tag: "let_cmd"; lvalue: LValue; expr: Expr; id: NodeId })
+  | (SourceSpan & { tag: "struct_def"; name: string; fields: StructField[]; id: NodeId })
+  | (SourceSpan & { tag: "read_image"; filename: string; target: Argument; id: NodeId })
+  | (SourceSpan & { tag: "write_image"; expr: Expr; filename: string; id: NodeId })
+  | (SourceSpan & { tag: "print"; message: string; id: NodeId })
+  | (SourceSpan & { tag: "show"; expr: Expr; id: NodeId })
+  | (SourceSpan & { tag: "time"; cmd: Cmd; id: NodeId });
 
 export type Program = {
   commands: Cmd[];

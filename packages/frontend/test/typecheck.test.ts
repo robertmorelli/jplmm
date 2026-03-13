@@ -98,6 +98,18 @@ describe("typecheckProgram", () => {
     expect(ds.some((d) => d.code === "INDEX_TYPE")).toBe(true);
   });
 
+  it("attaches index type diagnostics to the offending index expression", () => {
+    const src = `
+      fun f(a:int[], i:float): int {
+        ret a[i];
+      }
+    `;
+    const diagnostic = typecheck(src).find((d) => d.code === "INDEX_TYPE");
+
+    expect(diagnostic).toBeDefined();
+    expect(src.slice(diagnostic!.start, diagnostic!.end)).toBe("i");
+  });
+
   it("rejects non-numeric binops", () => {
     const ds = typecheck(`
       fn f(a:int[], b:int[]): int[] {
@@ -154,6 +166,24 @@ describe("typecheckProgram", () => {
     expect(ds).toHaveLength(0);
   });
 
+  it("rejects constant array bounds below one", () => {
+    const ds = typecheck(`
+      fn f(): int[] {
+        ret array [i:0] i;
+      }
+    `);
+    expect(ds.some((d) => d.code === "CONST_BOUND_CLAMP")).toBe(true);
+  });
+
+  it("rejects constant sum bounds below one", () => {
+    const ds = typecheck(`
+      fn f(): int {
+        ret sum [i:max(-3, -1)] i;
+      }
+    `);
+    expect(ds.some((d) => d.code === "CONST_BOUND_CLAMP")).toBe(true);
+  });
+
   it("rejects struct constructor arity mismatches", () => {
     const ds = typecheck(`
       struct Pair { left:int, right:int }
@@ -170,7 +200,7 @@ describe("typecheckProgram", () => {
       read image "demo.ppm" to (w, h, img);
       let px = img[h - 1][w - 1][0];
       write image img to "out.ppm";
-      show px;
+      out px;
     `);
     expect(ds).toHaveLength(0);
   });

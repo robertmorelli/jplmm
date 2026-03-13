@@ -1,27 +1,33 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-import { emitNativeCModule, emitWatModule } from "@jplmm/backend";
+import { buildWatSemantics, emitNativeCModule, emitWatModule } from "@jplmm/backend";
 import { runFrontend } from "@jplmm/frontend";
 import { buildIR } from "@jplmm/ir";
-import { optimizeProgram } from "@jplmm/optimize";
-import { verifyProgram } from "@jplmm/verify";
+import { optimizeProgram, type DisableablePassName, type FunctionImplementation } from "@jplmm/optimize";
+import { analyzeProgramMetrics, verifyProgram } from "@jplmm/verify";
 
 import { executeTopLevelProgram } from "./run";
+import { buildSemanticsDebugData, renderSemanticsDebugData } from "./semantics";
 
-export type CliMode = "parse" | "typecheck" | "verify" | "optimize" | "wat" | "native" | "run";
+export type CliMode = "parse" | "typecheck" | "verify" | "optimize" | "wat" | "native" | "run" | "semantics";
 
 export type CliOptions = {
   experimental?: boolean;
+  safe?: boolean;
+  disablePasses?: DisableablePassName[];
   cwd?: string;
+  verifyBeforeRun?: boolean;
 };
 
 export type CliReport = {
   mode: CliMode;
   diagnostics: string[];
   proofSummary: string[];
+  analysisSummary: string[];
   optimizeSummary: string[];
   implementationSummary: string[];
+  semantics: string | undefined;
   wat: string | undefined;
   nativeC: string | undefined;
   output: string[];
@@ -32,27 +38,41 @@ export type CliReport = {
 export function runOnSource(source: string, mode: CliMode, options: CliOptions = {}): CliReport {
   const frontend = runFrontend(source);
   const diagnostics = frontend.diagnostics.map((d) => `${d.severity.toUpperCase()}: ${d.message}`);
+  const shouldVerify = mode === "verify" || (mode === "run" && options.verifyBeforeRun === true);
+  const shouldAnalyzeProofs = shouldVerify || mode === "semantics";
+  const shouldShowRefinements = mode !== "parse" && mode !== "typecheck";
 
-  let proofSummary: string[] = [];
+  let proofSummary: string[] = shouldShowRefinements
+    ? frontend.refinements.map((refinement) => renderRefinementSummary(refinement))
+    : [];
+  let analysisSummary: string[] = [];
   let optimizeSummary: string[] = [];
   let implementationSummary: string[] = [];
+  let semantics: string | undefined;
   let wat: string | undefined;
   let nativeC: string | undefined;
   let output: string[] = [];
   let wroteFiles: string[] = [];
+  let verification: ReturnType<typeof verifyProgram> | null = null;
+  let semanticsBackend: Parameters<typeof buildSemanticsDebugData>[2] = null;
 
-  if (mode === "verify") {
-    const verify = verifyProgram(frontend.program);
-    diagnostics.push(...verify.diagnostics.map((d) => `${d.severity.toUpperCase()}: ${d.message}`));
-    proofSummary = [...verify.proofMap.entries()].map(
+  if (shouldAnalyzeProofs) {
+    verification = verifyProgram(frontend.program, frontend.typeMap);
+    const metrics = analyzeProgramMetrics(frontend.program);
+    diagnostics.push(...verification.diagnostics.map((d) => `${d.severity.toUpperCase()}: ${d.message}`));
+    proofSummary.push(...[...verification.proofMap.entries()].map(
       ([fnName, p]) => `${fnName}: ${p.status} (${p.method}) - ${p.details}`,
+    ));
+    analysisSummary = [...metrics.entries()].map(
+      ([fnName, metric]) =>
+        `${fnName}: source complexity ${metric.sourceComplexity} (base 1 + ${metric.recSites} rec site${metric.recSites === 1 ? "" : "s"}); canonical line-coverage witness ${metric.canonicalWitness}; coarse total call bound ${metric.coarseTotalCallBound}`,
     );
   }
 
   const hasErrors = diagnostics.some((d) => d.startsWith("ERROR:"));
-  if (!hasErrors && (mode === "optimize" || mode === "wat" || mode === "native")) {
+  if (!hasErrors && (mode === "optimize" || mode === "wat" || mode === "native" || mode === "semantics")) {
     const ir = buildIR(frontend.program, frontend.typeMap);
-    const optimizeOptions = options.experimental ? { enableResearchPasses: true } : {};
+    const optimizeOptions = buildOptimizeOptions(options);
     const optimized = optimizeProgram(ir, optimizeOptions);
     optimizeSummary = optimized.reports.map((report) => {
       const prefix = report.experimental ? "[experimental] " : "";
@@ -62,11 +82,30 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
     implementationSummary = [...optimized.artifacts.implementations.entries()].map(
       ([fnName, impl]) => `${fnName}: ${impl.tag}`,
     );
+    if (mode === "semantics") {
+      semanticsBackend = {
+        optimizeSummary: [...optimizeSummary],
+        implementationSummary: [...implementationSummary],
+        optimizedProgram: optimized.program,
+        wasm: buildWatSemantics(optimized.program, {
+          artifacts: optimized.artifacts,
+          tailCalls: true,
+          exportFunctions: true,
+        }),
+      };
+    }
     if (mode === "wat") {
       wat = emitWatModule(optimized.program, {
         artifacts: optimized.artifacts,
         tailCalls: true,
         exportFunctions: true,
+        moduleComments: buildWatDebugComments(
+          optimizeSummary,
+          implementationSummary,
+          optimized.artifacts.implementations,
+          optimizeOptions.enableResearchPasses === true,
+          optimizeOptions.disabledPasses ?? [],
+        ),
       });
     }
     if (mode === "native") {
@@ -74,6 +113,16 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
         artifacts: optimized.artifacts,
       });
     }
+  }
+
+  if (mode === "semantics") {
+    semantics = renderSemanticsDebugData(
+      buildSemanticsDebugData(
+        frontend,
+        verification ?? verifyProgram(frontend.program, frontend.typeMap),
+        semanticsBackend,
+      ),
+    );
   }
 
   if (!hasErrors && mode === "run") {
@@ -87,14 +136,68 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
     mode,
     diagnostics,
     proofSummary,
+    analysisSummary,
     optimizeSummary,
     implementationSummary,
+    semantics,
     wat,
     nativeC,
     output,
     wroteFiles,
     ok,
   };
+}
+
+function buildWatDebugComments(
+  optimizeSummary: string[],
+  implementationSummary: string[],
+  implementations: Map<string, FunctionImplementation>,
+  researchEnabled: boolean,
+  disabledPasses: DisableablePassName[],
+): string[] {
+  const comments = ["JPLMM debug WAT"];
+
+  if (optimizeSummary.length > 0) {
+    comments.push("optimization passes:");
+    comments.push(...optimizeSummary.map((line) => `  ${line}`));
+  }
+
+  if (implementationSummary.length > 0) {
+    comments.push("selected implementations:");
+    comments.push(...implementationSummary.map((line) => `  ${line}`));
+  }
+
+  if (!researchEnabled) {
+    comments.push("safe mode active: all optional optimizer passes are disabled");
+  }
+
+  if (disabledPasses.length > 0) {
+    comments.push(`disabled passes: ${disabledPasses.join(", ")}`);
+  }
+
+  const watFallbacks = [...implementations.entries()]
+    .flatMap(([fnName, implementation]) => describeWatFallback(fnName, implementation));
+  if (watFallbacks.length > 0) {
+    comments.push("wat backend fallbacks:");
+    comments.push(...watFallbacks.map((line) => `  ${line}`));
+  }
+
+  return comments;
+}
+
+function describeWatFallback(fnName: string, implementation: FunctionImplementation): string[] {
+  switch (implementation.tag) {
+    case "closed_form_linear_countdown":
+    case "lut":
+    case "aitken_scalar_tail":
+      return [];
+    case "linear_speculation":
+      return [`${fnName}: linear_speculation recognized but WAT lowering is not implemented yet; emitting generic recursion`];
+    default: {
+      const _never: never = implementation;
+      return _never;
+    }
+  }
 }
 
 export function runOnFile(filepath: string, mode: CliMode, options: CliOptions = {}): CliReport {
@@ -107,8 +210,44 @@ export function runOnFile(filepath: string, mode: CliMode, options: CliOptions =
 
 export function main(argv: string[]): number {
   const args = [...argv];
-  const experimental = args.includes("--experimental");
-  const filtered = args.filter((arg) => arg !== "--experimental");
+  let experimental = true;
+  let safe = false;
+  const disablePasses: DisableablePassName[] = [];
+  const filtered: string[] = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "--experimental") {
+      experimental = true;
+      continue;
+    }
+    if (arg === "--safe") {
+      safe = true;
+      continue;
+    }
+    if (arg === "--disable-pass") {
+      const pass = args[i + 1];
+      if (!pass || !isDisableablePassName(pass)) {
+        // eslint-disable-next-line no-console
+        console.error(`Unknown or missing pass after --disable-pass. Expected one of: ${DISABLEABLE_PASSES.join(", ")}`);
+        return 2;
+      }
+      disablePasses.push(pass);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--disable-pass=")) {
+      const pass = arg.slice("--disable-pass=".length);
+      if (!isDisableablePassName(pass)) {
+        // eslint-disable-next-line no-console
+        console.error(`Unknown pass '${pass}'. Expected one of: ${DISABLEABLE_PASSES.join(", ")}`);
+        return 2;
+      }
+      disablePasses.push(pass);
+      continue;
+    }
+    filtered.push(arg);
+  }
   const modeArg = filtered[0];
   const fileArg = filtered[1];
 
@@ -123,20 +262,22 @@ export function main(argv: string[]): number {
             ? "optimize"
             : modeArg === "-s"
               ? "wat"
-              : modeArg === "-a"
+            : modeArg === "-a"
                 ? "native"
                 : modeArg === "-r"
                   ? "run"
+                  : modeArg === "-m"
+                    ? "semantics"
                 : "verify";
   const file = modeArg?.startsWith("-") ? fileArg : modeArg;
 
   if (!file) {
     // eslint-disable-next-line no-console
-    console.error("Usage: jplmm [-p|-t|-v|-i|-s|-a|-r] [--experimental] <file.jplmm>");
+    console.error("Usage: jplmm [-p|-t|-v|-i|-s|-a|-r|-m] [--safe] [--disable-pass <name>] <file.jplmm>");
     return 2;
   }
 
-  const report = runOnFile(file, mode, { experimental });
+  const report = runOnFile(file, mode, { experimental, safe, disablePasses });
   for (const d of report.diagnostics) {
     // eslint-disable-next-line no-console
     console.log(d);
@@ -145,6 +286,10 @@ export function main(argv: string[]): number {
     // eslint-disable-next-line no-console
     console.log(p);
   }
+  for (const line of report.analysisSummary) {
+    // eslint-disable-next-line no-console
+    console.log(line);
+  }
   for (const p of report.optimizeSummary) {
     // eslint-disable-next-line no-console
     console.log(p);
@@ -152,6 +297,10 @@ export function main(argv: string[]): number {
   for (const impl of report.implementationSummary) {
     // eslint-disable-next-line no-console
     console.log(impl);
+  }
+  if (report.semantics) {
+    // eslint-disable-next-line no-console
+    console.log(report.semantics);
   }
   if (report.wat) {
     // eslint-disable-next-line no-console
@@ -166,4 +315,43 @@ export function main(argv: string[]): number {
     console.log(line);
   }
   return report.ok ? 0 : 1;
+}
+
+function renderRefinementSummary(refinement: ReturnType<typeof runFrontend>["refinements"][number]): string {
+  const prefix = `${refinement.fnName}: ref ${refinement.status}`;
+  if (refinement.status === "equivalent") {
+    const method = refinement.method ? ` (${refinement.method})` : "";
+    const explanation = refinement.equivalence ?? refinement.detail;
+    return `${prefix}${method} - ${explanation}`;
+  }
+  return `${prefix} - ${refinement.detail}`;
+}
+
+const DISABLEABLE_PASSES: DisableablePassName[] = [
+  "guard_elimination",
+  "closed_form",
+  "lut_tabulation",
+  "aitken",
+  "linear_speculation",
+];
+
+function isDisableablePassName(value: string): value is DisableablePassName {
+  return DISABLEABLE_PASSES.includes(value as DisableablePassName);
+}
+
+function buildOptimizeOptions(options: CliOptions): {
+  enableResearchPasses: boolean;
+  disabledPasses: DisableablePassName[];
+} {
+  const disabledPasses = new Set<DisableablePassName>(options.disablePasses ?? []);
+  const safe = options.safe === true || options.experimental === false;
+  if (safe) {
+    for (const pass of DISABLEABLE_PASSES) {
+      disabledPasses.add(pass);
+    }
+  }
+  return {
+    enableResearchPasses: !safe,
+    disabledPasses: [...disabledPasses],
+  };
 }

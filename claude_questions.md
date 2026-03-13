@@ -11,7 +11,7 @@ topic. Each question states why it matters for implementation.
 
 In the Babylonian example:
 
-    fn sqrt_iter(x : float, g : float) : float {
+    fun sqrt_iter(x : float, g : float) : float {
         ret (g + max(x, 0.0) / g) / 2.0   // res = new guess
         rad g - res                         // which res is this?
         ret rec(max(x, 0.0), res)
@@ -147,7 +147,7 @@ params`, if yes return `res`, else set params to `D` and re-execute from the
 top. What does "re-execute from the top" look like as flat SSA-like IR? Is
 it a back-edge to a loop header that re-binds all the param SSA values, or
 something else? `ir/builder.ts` needs a concrete representation for this. The
-arch says `rec` is desugared but doesn't show the loop structure.
+arch says `rec` is desugared but doesn't spell out the loop structure.
 
 ---
 
@@ -155,7 +155,7 @@ arch says `rec` is desugared but doesn't show the loop structure.
 
 For a WASM `return_call` lowering of `gas` functions, the fuel counter must be
 an additional `i32` parameter (locals don't survive across tail calls). But
-callers of `fn collatz(x: int): int` pass one argument, not two. There are two
+callers of `fun collatz(x: int): int` pass one argument, not two. There are two
 options: (a) the public WASM function is a wrapper that calls an internal
 `$collatz_fuel` function with the initial fuel, or (b) `gas` functions always
 use loop-based lowering rather than `return_call`. Which is it? The arch says
@@ -244,7 +244,7 @@ The code block shows the safe-divisor trick but stops before the `select`:
     i32.div_s       ;; ← produces x when y=0, not 0
 
 The comment says "result = (y == 0) ? 0 : raw" which requires a `select`, but
-the code doesn't show it. The spec and opt_arch both show the complete expansion
+the code doesn't include it. The spec and opt_arch both present the complete expansion
 with `select(0, raw, is0)`. Just needs the `select` instructions added to the
 code block.
 
@@ -267,6 +267,6 @@ Collatz. It doesn't — it applies one step and then calls `rec(res)` which
 makes `x` the previous step result. The fixed-point collapse fires when
 `res == x` (the step output equals the input), which in the Collatz orbit
 doesn't correspond to reaching 1. The `gas 1000` exhausts and returns the
-current `res`. Is the intent to show a function that might not terminate
+current `res`. Is the intent to illustrate a function that might not terminate
 without gas (legitimate) or to compute the Collatz sequence correctly
 (which it doesn't)? The example needs a comment clarifying the intent.

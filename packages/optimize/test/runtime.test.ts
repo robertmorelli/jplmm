@@ -124,6 +124,37 @@ describe("IR runtime semantics", () => {
     expect(result.value).toBe(13);
   });
 
+  it("preserves struct fields when normalizing function arguments", () => {
+    const program = compile(`
+      struct Tracker { pos:float, vel:float, target:float, gain:float }
+
+      fn step(state:Tracker): Tracker {
+        ret Tracker {
+          (state.pos * state.gain + state.target) / (state.gain + 1.0),
+          (state.vel + (state.target - state.pos) / 2.0) / 2.0,
+          state.target,
+          state.gain
+        };
+      }
+
+      fn iterate(state:Tracker): Tracker {
+        ret state;
+        ret rec(step(state));
+        gas 4;
+      }
+
+      fn score(state:Tracker): float {
+        let out = iterate(state);
+        ret out.pos + out.vel / 4.0;
+      }
+    `);
+    const result = executeProgram(program, "score", [
+      { kind: "struct", typeName: "Tracker", fields: [2.0, 3.0, 7.0, 4.0] },
+    ]);
+    expect(result.value).toBeTypeOf("number");
+    expect(result.stats.recCalls).toBeGreaterThan(0);
+  });
+
   it("evaluates array comprehensions, slices, and sums", () => {
     const program = compile(`
       fn score(n:int): int {
@@ -134,5 +165,37 @@ describe("IR runtime semantics", () => {
     `);
     const result = executeProgram(program, "score", [4]);
     expect(result.value).toBe(13);
+  });
+
+  it("clamps comprehension bounds to one and indices to the nearest cell", () => {
+    const program = compile(`
+      fn sample(n:int): int {
+        let grid = array [i:n - 5, j:2] i + j + 10;
+        let row = grid[n + 7];
+        ret row[0 - 3] + sum [k:n - 20] (k + 1);
+      }
+    `);
+    const result = executeProgram(program, "sample", [4]);
+    expect(result.value).toBe(11);
+  });
+
+  it("indexes arrays of structs without dropping field data", () => {
+    const program = compile(`
+      struct Pixel { r:int, g:int, b:int }
+
+      fn first(img:Pixel[][], h:int, w:int): int {
+        ret img[0][0].r;
+      }
+
+      fn make(seed:int): Pixel[][] {
+        let h = 2;
+        let w = 3;
+        let img = array [y:h, x:w] Pixel { x + 1, y + 2, 7 };
+        ret img;
+      }
+    `);
+    const made = executeProgram(program, "make", [0]).value;
+    const result = executeProgram(program, "first", [made, 2, 3]);
+    expect(result.value).toBe(1);
   });
 });

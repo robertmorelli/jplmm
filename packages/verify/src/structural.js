@@ -1,27 +1,46 @@
-export function checkStructuralDecrease(paramName, radExpr, recArgs) {
-    if (radExpr.tag !== "var" || radExpr.name !== paramName) {
+export function checkStructuralDecrease(params, radExpr, recArgs) {
+    const tracked = trackedParam(params, radExpr);
+    if (!tracked) {
         return {
             ok: false,
-            reason: `unsupported rad form for structural check (expected rad ${paramName})`,
+            reason: "unsupported rad form for structural check (expected rad <int-param> or rad abs(<int-param>))",
         };
     }
-    if (recArgs.length !== 1) {
+    if (tracked.index >= recArgs.length) {
         return {
             ok: false,
-            reason: "structural verifier currently supports single-argument rec only",
+            reason: `rec site does not provide tracked argument '${tracked.name}'`,
         };
     }
-    const arg = recArgs[0];
-    if (isParamMinusConst(paramName, arg)) {
+    const arg = recArgs[tracked.index];
+    if (isParamMinusConst(tracked.name, arg)) {
         return { ok: true, reason: "argument decreases structurally" };
     }
-    if (isMaxZeroParamMinusConst(paramName, arg)) {
+    if (isMaxZeroParamMinusConst(tracked.name, arg)) {
         return { ok: true, reason: "argument decreases structurally with floor at zero" };
     }
-    if (arg.tag === "var" && arg.name === paramName) {
+    if (arg.tag === "var" && arg.name === tracked.name) {
         return { ok: false, reason: "argument is unchanged; no strict decrease" };
     }
-    return { ok: false, reason: "could not prove structural decrease" };
+    if (isAbsOfParam(tracked.name, arg) && tracked.absolute) {
+        return { ok: false, reason: "argument is unchanged up to abs(); no strict decrease" };
+    }
+    return { ok: false, reason: `could not prove structural decrease of '${tracked.name}'` };
+}
+function trackedParam(params, radExpr) {
+    for (let i = 0; i < params.length; i += 1) {
+        const param = params[i];
+        if (param.type.tag !== "int") {
+            continue;
+        }
+        if (radExpr.tag === "var" && radExpr.name === param.name) {
+            return { name: param.name, index: i, absolute: false };
+        }
+        if (isAbsOfParam(param.name, radExpr)) {
+            return { name: param.name, index: i, absolute: true };
+        }
+    }
+    return null;
 }
 function isParamMinusConst(paramName, expr) {
     if (expr.tag !== "binop" || expr.op !== "-") {
@@ -44,6 +63,13 @@ function isMaxZeroParamMinusConst(paramName, expr) {
         return false;
     }
     return isParamMinusConst(paramName, b);
+}
+function isAbsOfParam(paramName, expr) {
+    return (expr.tag === "call" &&
+        expr.name === "abs" &&
+        expr.args.length === 1 &&
+        expr.args[0]?.tag === "var" &&
+        expr.args[0].name === paramName);
 }
 export function collectRecArgs(expr, out) {
     switch (expr.tag) {
@@ -95,13 +121,8 @@ export function collectRecArgs(expr, out) {
             return;
     }
 }
-export function findRadExpr(stmts) {
-    for (const s of stmts) {
-        if (s.tag === "rad") {
-            return s.expr;
-        }
-    }
-    return null;
+export function findRadExprs(stmts) {
+    return stmts.filter((stmt) => stmt.tag === "rad").map((stmt) => stmt.expr);
 }
 export function hasRec(stmts) {
     const bucket = [];

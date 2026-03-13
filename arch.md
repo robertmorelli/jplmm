@@ -113,9 +113,9 @@ that produces a C parser compiled to WASM for use in the frontend and LSP.
 
 **Output:** `tree-sitter-jplmm.wasm` — the compiled parser
 
-**Keywords in grammar:** `fn`, `let`, `ret`, `res`, `rec`, `rad`, `gas`,
+**Keywords in grammar:** `fun`, `let`, `ret`, `res`, `rec`, `rad`, `gas`,
 `inf`, `int`, `float`, `void`, `array`, `sum`, `struct`, `read`, `write`,
-`image`, `to`, `print`, `show`, `time`
+`image`, `to`, `print`, `out`, `time`
 
 **No keywords:** `if`, `then`, `else`, `true`, `false`, `bool`, `return`,
 `assert`
@@ -458,11 +458,11 @@ while Z3 is running, the in-flight query is cancelled and restarted. The hover
 updates to `verified` or `failed` when the query resolves.
 
 **Hover features:**
-- Hover on a variable → show type and inferred range (e.g., `x : int [0, 255]`)
-- Hover on `rad` → show proof status (`VERIFIED via structural`, `VERIFIED via
+- Hover on a variable → display type and inferred range (e.g., `x : int [0, 255]`)
+- Hover on `rad` → display proof status (`VERIFIED via structural`, `VERIFIED via
   SMT`, `PENDING (loading Z3...)`, `BOUNDED (gas 1000)`, `UNVERIFIED (gas inf)`)
-- Hover on `rec` → show contraction ratio if known (e.g., `ratio ≤ 0.25`)
-- Hover on a function name → show state-space cardinality and LUT eligibility
+- Hover on `rec` → display contraction ratio if known (e.g., `ratio ≤ 0.25`)
+- Hover on a function name → display state-space cardinality and LUT eligibility
 
 
 ### cli
@@ -620,7 +620,7 @@ pass.
 
 | Package | Test Type | Example |
 |---------|-----------|---------|
-| grammar | tree-sitter corpus | `fn f(x:int):int { ret x }` → expected CST |
+| grammar | tree-sitter corpus | `fun f(x:int):int { ret x }` → expected CST |
 | frontend | snapshot tests | source → AST → pretty-printed source (round-trip) |
 | frontend | error tests | `if x then y` → `error: 'if' is not a keyword in JPL--` |
 | verify | proof tests | `rad x` + `rec(max(0,x-1))` → `VERIFIED structural` |

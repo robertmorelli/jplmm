@@ -54,6 +54,8 @@ export type FunctionImplementation =
 export type ResearchCandidate = {
   pass: "aitken" | "linear_speculation";
   reason: string;
+  applied?: boolean;
+  blockedByDefinition?: boolean;
 };
 
 export type OptimizeArtifacts = {
@@ -83,7 +85,15 @@ export type OptimizeOptions = {
   parameterRangeHints?: ParameterRangeHints;
   enableResearchPasses?: boolean;
   lutThreshold?: number;
+  disabledPasses?: DisableablePassName[];
 };
+
+export type DisableablePassName =
+  | "guard_elimination"
+  | "closed_form"
+  | "lut_tabulation"
+  | "aitken"
+  | "linear_speculation";
 
 export type OptimizeResult = {
   program: IRProgram;

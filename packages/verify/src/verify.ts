@@ -1,36 +1,65 @@
 import type { Cmd, Program, Type } from "@jplmm/ast";
 import { typecheckProgram } from "@jplmm/frontend";
-
-import { analyzeFunction, proveWithSmt } from "./prover";
-import { checkStructuralDecrease, findRadExprs, hasRec } from "./structural";
-import type { ProofMethod, ProofResult, VerificationDiagnostic, VerificationOutput } from "./types";
+import {
+  analyzeIrFunction,
+  analyzeIrProofSites,
+  buildCanonicalProgram,
+  hasRec,
+} from "@jplmm/proof";
+import type {
+  ProofMethod,
+  ProofResult,
+  VerificationDiagnostic,
+  VerificationFunctionTrace,
+  VerificationOutput,
+} from "./types";
 
 export function verifyProgram(program: Program, typeMap?: Map<number, Type>): VerificationOutput {
   const proofMap = new Map<string, ProofResult>();
   const diagnostics: VerificationDiagnostic[] = [];
   const effectiveTypeMap = typeMap ?? typecheckProgram(program).typeMap;
+  const canonical = buildCanonicalProgram(program, effectiveTypeMap);
+  const canonicalFns = new Map(canonical.functions.map((fn) => [fn.name, fn] as const));
+  const structDefs = new Map(canonical.structs.map((struct) => [struct.name, struct.fields] as const));
+  const traceMap = new Map<string, VerificationFunctionTrace>();
+
+  for (const fn of canonical.functions) {
+    const analysis = analyzeIrFunction(fn, structDefs);
+    traceMap.set(fn.name, {
+      fnName: fn.name,
+      canonical: fn,
+      hasRec: hasRec(fn),
+      paramValues: analysis.paramValues,
+      result: analysis.result,
+      stmtSemantics: analysis.stmtSemantics,
+      radSites: analysis.radSites,
+      proofSites: analyzeIrProofSites(fn, analysis),
+      callSigs: analysis.callSigs,
+    });
+  }
 
   for (const cmd of program.commands) {
     const fn = unwrapTimedDefinition(cmd, "fn_def");
     if (!fn) {
       continue;
     }
-    const result = verifyFunction(fn, effectiveTypeMap, diagnostics);
+    const trace = traceMap.get(fn.name) ?? null;
+    const result = verifyFunction(fn.name, canonicalFns.get(fn.name) ?? null, trace, diagnostics);
     if (result) {
       proofMap.set(fn.name, result);
     }
   }
 
-  return { proofMap, diagnostics };
+  return { proofMap, diagnostics, canonicalProgram: canonical, traceMap };
 }
 
 function verifyFunction(
-  fn: Extract<Cmd, { tag: "fn_def" }>,
-  typeMap: Map<number, Type>,
+  fnName: string,
+  fn: import("@jplmm/ir").IRFunction | null,
+  trace: VerificationFunctionTrace | null,
   diagnostics: VerificationDiagnostic[],
 ): ProofResult | null {
-  const recPresent = hasRec(fn.body);
-  if (!recPresent) {
+  if (!fn || !hasRec(fn)) {
     return null;
   }
 
@@ -38,10 +67,10 @@ function verifyFunction(
   if (gas) {
     if (gas.limit === "inf") {
       diagnostics.push({
-        fnName: fn.name,
+        fnName,
         code: "VERIFY_GAS_INF",
         severity: "warning",
-        message: `${fn.name}: gas inf disables totality guarantee`,
+        message: `${fnName}: gas inf disables totality guarantee`,
       });
       return {
         status: "unverified",
@@ -56,13 +85,22 @@ function verifyFunction(
     };
   }
 
-  const rads = findRadExprs(fn.body);
-  if (rads.length === 0) {
+  const analysis = trace
+    ? {
+        paramValues: trace.paramValues,
+        result: trace.result,
+        stmtSemantics: trace.stmtSemantics,
+        radSites: trace.radSites,
+        recSites: trace.proofSites.map((site) => site.site),
+        callSigs: trace.callSigs,
+      }
+    : analyzeIrFunction(fn);
+  if (analysis.radSites.length === 0) {
     diagnostics.push({
-      fnName: fn.name,
+      fnName,
       code: "VERIFY_NO_PROOF",
       severity: "error",
-      message: `${fn.name}: rec used without rad or gas`,
+      message: `${fnName}: rec used without rad or gas`,
     });
     return {
       status: "rejected",
@@ -71,63 +109,27 @@ function verifyFunction(
     };
   }
 
-  const analysis = analyzeFunction(fn, typeMap);
   const methods: ProofMethod[] = [];
   const details: string[] = [];
+  const siteTraces = trace?.proofSites ?? analyzeIrProofSites(fn, analysis);
 
-  for (let siteIndex = 0; siteIndex < analysis.recSites.length; siteIndex += 1) {
-    const site = analysis.recSites[siteIndex]!;
-    const candidateRads = analysis.radSites;
-    if (candidateRads.length === 0) {
+  for (const trace of siteTraces) {
+    const winner = trace.obligations.find((obligation) => obligation.proved) ?? null;
+    if (!winner) {
       diagnostics.push({
-        fnName: fn.name,
+        fnName,
         code: "VERIFY_PROOF_FAIL",
         severity: "error",
-        message: `${fn.name}: rec site ${siteIndex + 1} has no preceding rad expression`,
+        message: `${fnName}: rec site ${trace.siteIndex + 1} failed proof obligations; ${trace.reasons.join("; ")}; consider using gas N if a convergence proof is not possible`,
       });
       return {
         status: "rejected",
         method: "none",
-        details: `rec site ${siteIndex + 1} has no preceding rad expression`,
+        details: trace.reasons.join("; "),
       };
     }
-
-    let proved = false;
-    const reasons: string[] = [];
-
-    for (const rad of candidateRads) {
-      const structural = checkStructuralDecrease(fn.params, rad.source, site.args);
-      if (structural.ok) {
-        proved = true;
-        methods.push("structural");
-        details.push(`rec site ${siteIndex + 1}: structural via '${rad.rendered}'`);
-        break;
-      }
-      reasons.push(structural.reason);
-
-      const smt = proveWithSmt(fn, rad, site, analysis.callSigs);
-      if (smt.ok) {
-        proved = true;
-        methods.push("smt");
-        details.push(`rec site ${siteIndex + 1}: ${smt.details}`);
-        break;
-      }
-      reasons.push(...smt.reasons);
-    }
-
-    if (!proved) {
-      diagnostics.push({
-        fnName: fn.name,
-        code: "VERIFY_PROOF_FAIL",
-        severity: "error",
-        message: `${fn.name}: rec site ${siteIndex + 1} failed proof obligations; ${unique(reasons).join("; ")}; consider using gas N if a convergence proof is not possible`,
-      });
-      return {
-        status: "rejected",
-        method: "none",
-        details: unique(reasons).join("; "),
-      };
-    }
+    methods.push(winner.method ?? "structural");
+    details.push(winner.details ?? `rec site ${trace.siteIndex + 1}: proof succeeded`);
   }
 
   return {
@@ -148,8 +150,4 @@ function unwrapTimedDefinition<TTag extends "fn_def">(
     return cmd.cmd as Extract<Cmd, { tag: TTag }>;
   }
   return null;
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
 }

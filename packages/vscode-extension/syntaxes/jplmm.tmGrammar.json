@@ -1,0 +1,190 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "JPLMM",
+  "scopeName": "source.jplmm",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#function-definition"
+    },
+    {
+      "include": "#struct-definition"
+    },
+    {
+      "include": "#parameters"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#fields"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    },
+    {
+      "include": "#numbers"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.jplmm",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.jplmm",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.jplmm",
+              "match": "\\\\[nrt\\\\\"]"
+            }
+          ]
+        }
+      ]
+    },
+    "function-definition": {
+      "patterns": [
+        {
+          "match": "\\b(fun|fn|def|ref)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.function.jplmm"
+            },
+            "2": {
+              "name": "entity.name.function.jplmm"
+            }
+          }
+        }
+      ]
+    },
+    "struct-definition": {
+      "patterns": [
+        {
+          "match": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.struct.jplmm"
+            },
+            "2": {
+              "name": "entity.name.type.jplmm"
+            }
+          }
+        }
+      ]
+    },
+    "parameters": {
+      "patterns": [
+        {
+          "name": "variable.parameter.jplmm",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:)"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.jplmm",
+          "match": "\\b(int|float|void)\\b"
+        },
+        {
+          "name": "support.type.named.jplmm",
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.jplmm",
+          "match": "\\b(fun|fn|def|ref|let|ret|res|rec|rad|gas|inf|array|sum|struct|read|write|image|to|print|out|show|time|throwserror)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.jplmm",
+          "match": "\\b(sqrt|exp|sin|cos|tan|asin|acos|atan|log|pow|atan2|to_float|to_int|max|min|abs|clamp)\\b"
+        }
+      ]
+    },
+    "fields": {
+      "patterns": [
+        {
+          "name": "variable.other.member.jplmm",
+          "match": "(?<=\\.)[A-Za-z_][A-Za-z0-9_]*"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arithmetic.jplmm",
+          "match": "[+\\-*/%]"
+        },
+        {
+          "name": "keyword.operator.assignment.jplmm",
+          "match": "="
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.accessor.dot.jplmm",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.separator.sequence.jplmm",
+          "match": "[,;]"
+        },
+        {
+          "name": "punctuation.separator.type.jplmm",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.section.group.begin.jplmm",
+          "match": "[\\(\\{\\[]"
+        },
+        {
+          "name": "punctuation.section.group.end.jplmm",
+          "match": "[\\)\\}\\]]"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.jplmm",
+          "match": "\\b\\d+\\.\\d+(?:[eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.jplmm",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    }
+  }
+}

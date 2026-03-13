@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
   "dependencies": {
     "@jplmm/backend": "file:../backend",
     "@jplmm/frontend": "file:../frontend",
     "@jplmm/ir": "file:../ir",
     "@jplmm/optimize": "file:../optimize",
+    "@jplmm/proof": "file:../proof",
     "@jplmm/verify": "file:../verify"
   },
   "scripts": {

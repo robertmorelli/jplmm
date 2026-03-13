@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build:jplmm-vscode-extension",
+      "type": "npm",
+      "script": "build",
+      "path": "packages/vscode-extension",
+      "group": "build",
+      "problemMatcher": "$tsc"
+    }
+  ]
+}

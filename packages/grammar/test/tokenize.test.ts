@@ -4,9 +4,9 @@ import { findRemovedKeywordUsage, tokenize } from "../src/tokenize.ts";
 
 describe("tokenize", () => {
   it("tokenizes a simple function body", () => {
-    const tokens = tokenize("fn f(x:int):int { ret x + 1; }");
+    const tokens = tokenize("fun f(x:int):int { ret x + 1; }");
     expect(tokens.at(-1)?.kind).toBe("eof");
-    expect(tokens.some((t) => t.text === "fn" && t.kind === "keyword")).toBe(true);
+    expect(tokens.some((t) => t.text === "fun" && t.kind === "keyword")).toBe(true);
     expect(tokens.some((t) => t.text === "ret" && t.kind === "keyword")).toBe(true);
     expect(tokens.some((t) => t.text === "+" && t.kind === "symbol")).toBe(true);
   });
@@ -42,14 +42,20 @@ describe("tokenize", () => {
   });
 
   it("tracks token source offsets", () => {
-    const src = "fn f(x:int):int { ret x; }";
+    const src = "fun f(x:int):int { ret x; }";
     const tokens = tokenize(src);
     const fnTok = tokens[0];
     const xTok = tokens.find((t) => t.text === "x");
     expect(fnTok?.start).toBe(0);
-    expect(fnTok?.end).toBe(2);
+    expect(fnTok?.end).toBe(3);
     expect(xTok?.start).toBeGreaterThan(0);
     expect(xTok?.end).toBeGreaterThan(xTok?.start ?? 0);
+  });
+
+  it("keeps fn and show as legacy keyword aliases", () => {
+    const tokens = tokenize("fn main():int { ret 0; } show main()");
+    expect(tokens.some((t) => t.text === "fn" && t.kind === "keyword")).toBe(true);
+    expect(tokens.some((t) => t.text === "show" && t.kind === "keyword")).toBe(true);
   });
 
   it("treats removed keywords as identifiers", () => {
@@ -67,7 +73,7 @@ describe("findRemovedKeywordUsage", () => {
   });
 
   it("ignores non-removed identifiers", () => {
-    const found = findRemovedKeywordUsage("fn main ret value");
+    const found = findRemovedKeywordUsage("fun main ret value");
     expect(found).toEqual([]);
   });
 });

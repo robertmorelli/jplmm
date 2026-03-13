@@ -16,7 +16,11 @@
     "examples:regen": "node tools/generate_examples.mjs",
     "test": "turbo run test",
     "lint": "turbo run lint",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "examples:dafny:regen": "node tools/generate_examples_dafny.mjs",
+    "bench:examples-dafny": "node_modules/vitest/vitest.mjs run -c vitest.examples-dafny.config.ts",
+    "examples:dafny:bv32:regen": "node tools/generate_examples_dafny_bv32.mjs",
+    "bench:examples-dafny-comparable": "node_modules/vitest/vitest.mjs run -c vitest.examples-dafny-comparable.config.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

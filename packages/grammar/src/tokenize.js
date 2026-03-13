@@ -1,4 +1,4 @@
-import { REMOVED_KEYWORDS } from "./keywords";
+import { ACTIVE_KEYWORDS, REMOVED_KEYWORDS } from "./keywords";
 const SYMBOLS = new Set([
     "(",
     ")",
@@ -48,15 +48,71 @@ export function tokenize(source) {
             i += 1;
             continue;
         }
+        if (ch === "\"") {
+            const start = i;
+            i += 1;
+            let text = "";
+            while (i < source.length) {
+                const current = at(i);
+                if (current === "\"") {
+                    i += 1;
+                    out.push({ kind: "string", text, start, end: i });
+                    break;
+                }
+                if (current === "\\") {
+                    const escaped = at(i + 1);
+                    if (escaped === "n") {
+                        text += "\n";
+                        i += 2;
+                        continue;
+                    }
+                    if (escaped === "r") {
+                        text += "\r";
+                        i += 2;
+                        continue;
+                    }
+                    if (escaped === "t") {
+                        text += "\t";
+                        i += 2;
+                        continue;
+                    }
+                    if (escaped === "\\" || escaped === "\"") {
+                        text += escaped;
+                        i += 2;
+                        continue;
+                    }
+                    throw new Error(`Unsupported string escape '\\${escaped}' at offset ${i}`);
+                }
+                if (current === "\n" || current === "\r") {
+                    throw new Error(`Unterminated string literal at offset ${start}`);
+                }
+                text += current;
+                i += 1;
+            }
+            if (out[out.length - 1]?.kind !== "string") {
+                throw new Error(`Unterminated string literal at offset ${start}`);
+            }
+            continue;
+        }
         if (isDigit(ch)) {
             const start = i;
             while (i < source.length && isDigit(at(i))) {
                 i += 1;
             }
             let kind = "int";
-            if (at(i) === "." && isDigit(at(i + 1))) {
+            if (at(i) === ".") {
                 kind = "float";
                 i += 1;
+                while (i < source.length && isDigit(at(i))) {
+                    i += 1;
+                }
+            }
+            if ((at(i) === "e" || at(i) === "E") && (isDigit(at(i + 1)) || ((at(i + 1) === "+" || at(i + 1) === "-") && isDigit(at(i + 2))))) {
+                kind = "float";
+                i += 1;
+                if (at(i) === "+" || at(i) === "-") {
+                    i += 1;
+                }
                 while (i < source.length && isDigit(at(i))) {
                     i += 1;
                 }
@@ -71,19 +127,7 @@ export function tokenize(source) {
                 i += 1;
             }
             const text = source.slice(start, i);
-            const kind = text === "fn" ||
-                text === "let" ||
-                text === "ret" ||
-                text === "res" ||
-                text === "rec" ||
-                text === "rad" ||
-                text === "gas" ||
-                text === "inf" ||
-                text === "int" ||
-                text === "float" ||
-                text === "void"
-                ? "keyword"
-                : "ident";
+            const kind = ACTIVE_KEYWORDS.has(text) ? "keyword" : "ident";
             out.push({ kind, text, start, end: i });
             continue;
         }

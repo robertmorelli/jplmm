@@ -5,6 +5,7 @@ import { runFrontend } from "@jplmm/frontend";
 import { optimizeProgram } from "@jplmm/optimize";
 
 import {
+  buildWatSemantics,
   compileProgramToInstance,
   compileWatToWasm,
   emitWatModule,
@@ -13,7 +14,7 @@ import {
 
 function compile(source: string) {
   const frontend = runFrontend(source);
-  expect(frontend.diagnostics).toEqual([]);
+  expect(frontend.diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
   return buildIR(frontend.program, frontend.typeMap);
 }
 
@@ -58,6 +59,37 @@ describe("@jplmm/backend", () => {
     expect(safe(10, 2)).toBe(6);
     expect(wat).toContain("call $jplmm_total_div_i32");
     expect(wat).toContain("call $jplmm_sat_add_i32");
+  });
+
+  it("describes Wasm lowering in terms of total arithmetic helpers and recursion strategy", () => {
+    const optimized = optimizeProgram(compile(`
+      fn safe(x:int, y:int): int {
+        ret (x / y) + 1;
+      }
+
+      fn zero(x:int): int {
+        ret x;
+        ret rec(max(0, x - 1));
+        rad x;
+      }
+    `), {
+      disabledPasses: ["closed_form"],
+    });
+    const semantics = buildWatSemantics(optimized.program, {
+      artifacts: optimized.artifacts,
+      tailCalls: false,
+      exportFunctions: true,
+    });
+
+    const safe = semantics.functions.find((fn) => fn.name === "safe");
+    const zero = semantics.functions.find((fn) => fn.name === "zero");
+
+    expect(safe?.helpers.map((helper) => helper.name)).toContain("jplmm_total_div_i32");
+    expect(safe?.helpers.map((helper) => helper.name)).toContain("jplmm_sat_add_i32");
+    expect(safe?.statements[0]?.expr?.lowering.kind).toBe("helper_call");
+    expect(zero?.recursion.tailStrategy).toBe("loop_branch");
+    expect(zero?.statements[1]?.expr?.lowering.kind).toBe("tail_recursion");
+    expect(semantics.helperSemantics.jplmm_total_div_i32).toContain("returns 0");
   });
 
   it("executes loop-lowered tail recursion when tail calls are disabled", async () => {
@@ -107,6 +139,32 @@ describe("@jplmm/backend", () => {
     expect(wasm.byteLength).toBeGreaterThan(0);
     expect(wat).toContain("return_call $zero");
     expect(wat).toContain("call $jplmm_max_i32");
+  });
+
+  it("includes debug comments in emitted wat when requested", () => {
+    const optimized = optimizeProgram(
+      compile(`
+        fn steps(x:int): int {
+          ret 0;
+          ret rec(max(0, x - 1)) + 1;
+          rad x;
+        }
+      `),
+    );
+    const wat = emitWatModule(optimized.program, {
+      artifacts: optimized.artifacts,
+      exportFunctions: true,
+      moduleComments: [
+        "JPLMM debug WAT",
+        "optimization passes:",
+        "  closed_form: specialized steps",
+      ],
+    });
+
+    expect(wat).toContain(";; JPLMM debug WAT");
+    expect(wat).toContain(";; optimization passes:");
+    expect(wat).toContain(";;   closed_form: specialized steps");
+    expect(compileWatToWasm(wat).byteLength).toBeGreaterThan(0);
   });
 
   it("executes gas-bounded tail recursion in compiled wasm", async () => {
@@ -161,6 +219,127 @@ describe("@jplmm/backend", () => {
     expect(wat).not.toContain("call $steps");
   });
 
+  it("compiles proven ref definitions down to the refined implementation", async () => {
+    const { wat, instance } = await compileInstance(`
+      def clamp_hi(x:int): int {
+        ret min(max(x, 0), 255);
+      }
+
+      ref clamp_hi(n:int): int {
+        ret clamp(n, 0, 255);
+      }
+    `);
+    const clampHi = exportedFunction<(x: number) => number>(instance, "clamp_hi");
+
+    expect(clampHi(-5)).toBe(0);
+    expect(clampHi(300)).toBe(255);
+    expect(wat.match(/\(func \$clamp_hi/g)?.length ?? 0).toBe(1);
+  });
+
+  it("compiles recursively-proven ref definitions down to the refined implementation", async () => {
+    const { wat, instance } = await compileInstance(`
+      fun shrink(x:int): int {
+        ret 0;
+        ret rec(x / 2) + 1;
+        rad abs(x);
+      }
+
+      ref shrink(n:int): int {
+        ret 0;
+        let next = n / 2;
+        ret 1 + rec(next);
+        rad abs(n);
+      }
+    `);
+    const shrink = exportedFunction<(x: number) => number>(instance, "shrink");
+
+    expect(shrink(0)).toBe(1);
+    expect(shrink(8)).toBe(5);
+    expect(shrink(-8)).toBe(5);
+    expect(wat.match(/\(func \$shrink/g)?.length ?? 0).toBe(1);
+  });
+
+  it("compiles recursive refs that wrap recursive results in interpreted calls", async () => {
+    const { wat, instance } = await compileInstance(`
+      fun fib(x:int): int {
+        let a = max(0, x);
+        let b = min(1, a);
+        ret b;
+        ret max(res, rec(max(0, x - 1)) + rec(max(0, x - 2)));
+        rad abs(x);
+      }
+
+      ref fib(x:int): int {
+        let a = max(0, x);
+        let b = min(1, a);
+        ret b;
+        ret max(res, rec(max(0, x - 1)) + rec(max(0, x - 2))) - 1 + 1;
+        rad abs(x);
+      }
+    `);
+    const fib = exportedFunction<(x: number) => number>(instance, "fib");
+
+    expect(fib(0)).toBe(0);
+    expect(fib(1)).toBe(1);
+    expect(fib(6)).toBe(8);
+    expect(wat.match(/\(func \$fib/g)?.length ?? 0).toBe(1);
+  });
+
+  it("compiles recursive refs that route recursive arguments through array closures", async () => {
+    const { wat, instance } = await compileInstance(`
+      fun countdown(n:int): int {
+        ret 0;
+        ret rec(max(0, n - 1)) + 1;
+        rad abs(n);
+      }
+
+      ref countdown(n:int): int {
+        let nexts = array[i:1] max(0, n - 1);
+        ret 0;
+        ret rec(nexts[0]) + 1;
+        rad abs(n);
+      }
+    `);
+    const countdown = exportedFunction<(x: number) => number>(instance, "countdown");
+
+    expect(countdown(0)).toBe(1);
+    expect(countdown(5)).toBe(6);
+    expect(wat.match(/\(func \$countdown/g)?.length ?? 0).toBe(1);
+  });
+
+  it("compiles recursive refs when an array literal acts as a lookup closure", async () => {
+    const { wat, instance } = await compileInstance(`
+      fun fib(x:int): int {
+        let a = max(0, x);
+        let b = min(1, a);
+        ret b;
+        ret max(res, rec(max(0, x - 1)) + rec(max(0, x - 2)));
+        rad abs(x);
+      }
+
+      ref fib(x:int): int {
+        let safe_x = clamp(x, 0, 47);
+        let table = [
+          0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610,
+          987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025,
+          121393, 196418, 317811, 514229, 832040, 1346269, 2178309,
+          3524578, 5702887, 9227465, 14930352, 24157817, 39088169,
+          63245986, 102334155, 165580141, 267914296, 433494437,
+          701408733, 1134903170, 1836311903, 2147483647
+        ];
+        ret table[safe_x];
+      }
+    `);
+    const fib = exportedFunction<(x: number) => number>(instance, "fib");
+
+    expect(fib(-5)).toBe(0);
+    expect(fib(0)).toBe(0);
+    expect(fib(1)).toBe(1);
+    expect(fib(12)).toBe(144);
+    expect(fib(48)).toBe(2147483647);
+    expect(wat.match(/\(func \$fib/g)?.length ?? 0).toBe(1);
+  });
+
   it("lowers LUT implementations into wasm memory-backed fast paths with fallback", async () => {
     const { optimized, wat, instance } = await compileInstance(
       `
@@ -182,6 +361,58 @@ describe("@jplmm/backend", () => {
     expect(wat).toContain("(memory $jplmm_mem");
     expect(wat).toContain("(data (i32.const");
     expect(wat).toContain("call $poly__generic");
+  });
+
+  it("describes LUT-backed Wasm lowering with a generic fallback body", () => {
+    const optimized = optimizeProgram(
+      compile(`
+        fn poly(x:int): int {
+          ret x * x + 1;
+        }
+      `),
+      {
+        parameterRangeHints: {
+          poly: [{ lo: 0, hi: 7 }],
+        },
+      },
+    );
+    const semantics = buildWatSemantics(optimized.program, {
+      artifacts: optimized.artifacts,
+      exportFunctions: true,
+    });
+    const poly = semantics.functions.find((fn) => fn.name === "poly");
+
+    expect(poly?.implementation.loweredAs).toBe("lut_wrapper");
+    expect(poly?.fallback?.wasmName).toBe("poly__generic");
+    expect(semantics.memory.luts[0]?.fnName).toBe("poly");
+    expect(semantics.memory.luts[0]?.cells).toBeGreaterThan(0);
+  });
+
+  it("lowers generalized Aitken acceleration directly into wasm", async () => {
+    const { optimized, wat, instance } = await compileInstance(
+      `
+        fun avg(target:float, guess:float): float {
+          ret guess;
+          ret (res + target) / 2.0;
+          ret rec(target, res);
+          rad target - res;
+        }
+      `,
+      {
+        enableResearchPasses: true,
+      },
+      {
+        tailCalls: true,
+      },
+    );
+    const avg = exportedFunction<(target: number, guess: number) => number>(instance, "avg");
+
+    expect(optimized.artifacts.implementations.get("avg")?.tag).toBe("aitken_scalar_tail");
+    expect(avg(100, 0)).toBeCloseTo(100, 2);
+    expect(wat).toContain("jplmm_aitken_pred");
+    expect(wat).toContain("call $jplmm_isfinite_f32");
+    expect(wat).toContain("loop $avg__loop");
+    expect(wat).not.toContain("return_call $avg");
   });
 
   it("executes struct construction, field access, and struct fixed-point equality in wasm", async () => {
@@ -212,6 +443,46 @@ describe("@jplmm/backend", () => {
     expect(settle(handle)).toBe(5);
     expect(wat).toContain("call $jplmm_eq_struct_Pair");
     expect(wat).toContain("call $jplmm_word_load_i32");
+  });
+
+  it("clamps comprehension bounds and array indices in compiled wasm", async () => {
+    const { wat, instance } = await compileInstance(`
+      fn sample(n:int): int {
+        let grid = array [i:n - 5, j:2] i + j + 10;
+        let row = grid[n + 7];
+        ret row[0 - 3] + sum [k:n - 20] (k + 1);
+      }
+    `);
+    const sample = exportedFunction(instance, "sample");
+
+    expect(sample(4)).toBe(11);
+    expect(wat).toContain("call $jplmm_clamp_i32");
+    expect(wat).toContain("call $jplmm_max_i32");
+  });
+
+  it("exports a wasm heap reset helper for repeated host-driven execution", async () => {
+    const { instance } = await compileInstance(`
+      struct Pair { left:int, right:int }
+
+      fn make_pair(x:int): Pair {
+        ret Pair { x, x + 1 };
+      }
+
+      fn use_pair(p:Pair): int {
+        ret p.right;
+      }
+    `);
+    const makePair = exportedFunction<(x: number) => number>(instance, "make_pair");
+    const usePair = exportedFunction<(p: number) => number>(instance, "use_pair");
+    const resetHeap = exportedFunction<() => void>(instance, "__jplmm_reset_heap");
+
+    const first = makePair(4);
+    expect(usePair(first)).toBe(5);
+
+    resetHeap();
+
+    const second = makePair(9);
+    expect(usePair(second)).toBe(10);
   });
 
   it("executes struct field let-target updates in compiled wasm", async () => {

@@ -1,44 +1,53 @@
 const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
 export function executeProgram(program, fnName, args, options = {}) {
-    const functions = new Map(program.functions.map((fn) => [fn.name, fn]));
-    const stats = createStats();
-    const value = executeFunction(functions, program, fnName, args, options.artifacts, stats, 1);
-    return { value, stats };
+    const ctx = {
+        functions: new Map(program.functions.map((fn) => [fn.name, fn])),
+        structs: new Map(program.structs.map((struct) => [struct.name, struct])),
+        program,
+        artifacts: options.artifacts,
+        stats: createStats(),
+    };
+    const value = executeFunction(ctx, fnName, args, 1);
+    return { value, stats: ctx.stats };
 }
-function executeFunction(functions, program, fnName, args, artifacts, stats, depth) {
-    const fn = functions.get(fnName);
+function executeFunction(ctx, fnName, args, depth) {
+    const fn = ctx.functions.get(fnName);
     if (!fn) {
         throw new Error(`Unknown IR function '${fnName}'`);
     }
-    stats.functionCalls += 1;
-    stats.maxCallDepth = Math.max(stats.maxCallDepth, depth);
-    const impl = artifacts?.implementations.get(fnName);
-    if (impl?.tag === "closed_form_linear_countdown") {
-        recordImplementationHit(stats, impl.tag);
-        return evalClosedFormLinear(impl, args);
+    ctx.stats.functionCalls += 1;
+    ctx.stats.maxCallDepth = Math.max(ctx.stats.maxCallDepth, depth);
+    const impl = ctx.artifacts?.implementations.get(fnName);
+    const scalarArgs = asScalarArgs(args);
+    if (impl?.tag === "closed_form_linear_countdown" && scalarArgs) {
+        recordImplementationHit(ctx.stats, impl.tag);
+        return evalClosedFormLinear(impl, scalarArgs);
     }
-    if (impl?.tag === "lut") {
-        const lutValue = tryEvalLut(impl, args);
+    if (impl?.tag === "lut" && scalarArgs) {
+        const lutValue = tryEvalLut(impl, scalarArgs);
         if (lutValue !== null) {
-            recordImplementationHit(stats, impl.tag);
+            recordImplementationHit(ctx.stats, impl.tag);
             return lutValue;
         }
     }
-    let currentParams = args.map((arg, idx) => normalizeByType(arg, fn.params[idx]?.type));
+    let currentParams = args.map((arg, idx) => normalizeByType(arg, fn.params[idx]?.type, ctx.structs));
     if (impl?.tag === "linear_speculation") {
-        recordImplementationHit(stats, impl.tag);
-        currentParams = applyLinearSpeculation(impl, currentParams, fn);
+        const specArgs = asScalarArgs(currentParams);
+        if (specArgs) {
+            recordImplementationHit(ctx.stats, impl.tag);
+            currentParams = applyLinearSpeculation(impl, specArgs, fn);
+        }
     }
     let remainingFuel = getInitialFuel(fn);
     const aitkenHistory = [];
     const aitkenImpl = impl?.tag === "aitken_scalar_tail" ? impl : undefined;
     while (true) {
-        stats.iterations += 1;
+        ctx.stats.iterations += 1;
         if (aitkenImpl) {
             const stateParam = currentParams[aitkenImpl.stateParamIndex];
-            if (stateParam !== undefined) {
-                aitkenHistory.push(normalizeByType(stateParam, fn.params[aitkenImpl.stateParamIndex]?.type));
+            if (typeof stateParam === "number") {
+                aitkenHistory.push(normalizeScalarByType(stateParam, fn.params[aitkenImpl.stateParamIndex]?.type));
             }
         }
         const env = new Map();
@@ -57,12 +66,12 @@ function executeFunction(functions, program, fnName, args, artifacts, stats, dep
         let pendingTailArgs = null;
         for (const stmt of fn.body) {
             if (stmt.tag === "let") {
-                frame.env.set(stmt.name, evalExpr(stmt.expr, frame, functions, program, artifacts, stats, depth));
+                frame.env.set(stmt.name, evalExpr(stmt.expr, frame, ctx, depth));
                 continue;
             }
             if (stmt.tag === "ret") {
                 if (stmt.expr.tag === "rec" && stmt.expr.tailPosition) {
-                    const recResult = handleTailRec(stmt.expr, frame, functions, program, artifacts, stats, depth);
+                    const recResult = handleTailRec(stmt.expr, frame, ctx, depth);
                     remainingFuel = frame.fuel;
                     if (recResult.kind === "return") {
                         return recResult.value;
@@ -70,48 +79,45 @@ function executeFunction(functions, program, fnName, args, artifacts, stats, dep
                     pendingTailArgs = recResult.nextArgs;
                     break;
                 }
-                frame.currentRes = evalExpr(stmt.expr, frame, functions, program, artifacts, stats, depth);
-                continue;
-            }
-            if (stmt.tag === "gas" || stmt.tag === "rad") {
+                frame.currentRes = evalExpr(stmt.expr, frame, ctx, depth);
                 continue;
             }
         }
         if (!pendingTailArgs) {
-            return frame.currentRes ?? defaultValueForType(fn.retType);
+            return frame.currentRes ?? defaultValueForType(fn.retType, ctx.structs);
         }
         currentParams = pendingTailArgs;
     }
 }
-function handleTailRec(expr, frame, functions, program, artifacts, stats, depth) {
-    const nextArgs = expr.args.map((arg) => evalExpr(arg, frame, functions, program, artifacts, stats, depth));
-    if (argsMatchCurrent(frame.fn, nextArgs, frame.params)) {
-        stats.recCalls += 1;
-        stats.recCollapses += 1;
-        return { kind: "return", value: frame.currentRes ?? defaultValueForType(frame.fn.retType) };
+function handleTailRec(expr, frame, ctx, depth) {
+    const nextArgs = expr.args.map((arg) => evalExpr(arg, frame, ctx, depth));
+    if (argsMatchCurrent(frame.fn, nextArgs, frame.params, ctx.structs)) {
+        ctx.stats.recCalls += 1;
+        ctx.stats.recCollapses += 1;
+        return { kind: "return", value: frame.currentRes ?? defaultValueForType(frame.fn.retType, ctx.structs) };
     }
     if (typeof frame.fuel === "number" && frame.fuel === 0) {
-        stats.recCalls += 1;
-        stats.gasExhaustions += 1;
-        return { kind: "return", value: frame.currentRes ?? defaultValueForType(frame.fn.retType) };
+        ctx.stats.recCalls += 1;
+        ctx.stats.gasExhaustions += 1;
+        return { kind: "return", value: frame.currentRes ?? defaultValueForType(frame.fn.retType, ctx.structs) };
     }
-    stats.recCalls += 1;
-    stats.tailRecTransitions += 1;
+    ctx.stats.recCalls += 1;
+    ctx.stats.tailRecTransitions += 1;
     if (typeof frame.fuel === "number") {
         frame.fuel -= 1;
     }
     let rewrittenArgs = nextArgs;
     if (frame.aitkenImpl) {
-        const aitkenArgs = tryApplyAitken(frame.aitkenImpl, frame, nextArgs);
+        const aitkenArgs = tryApplyAitken(frame.aitkenImpl, frame, nextArgs, ctx.structs);
         if (aitkenArgs) {
-            recordImplementationHit(stats, frame.aitkenImpl.tag);
+            recordImplementationHit(ctx.stats, frame.aitkenImpl.tag);
             rewrittenArgs = aitkenArgs;
         }
     }
     return { kind: "tail", nextArgs: rewrittenArgs };
 }
-function evalExpr(expr, frame, functions, program, artifacts, stats, depth) {
-    stats.exprEvaluations += 1;
+function evalExpr(expr, frame, ctx, depth) {
+    ctx.stats.exprEvaluations += 1;
     switch (expr.tag) {
         case "int_lit":
             return saturateInt(expr.value);
@@ -129,175 +135,210 @@ function evalExpr(expr, frame, functions, program, artifacts, stats, depth) {
         case "res":
             return frame.currentRes ?? 0;
         case "unop": {
-            const operand = evalExpr(expr.operand, frame, functions, program, artifacts, stats, depth);
+            const operand = evalExpr(expr.operand, frame, ctx, depth);
             return evalUnary(expr.op, operand, expr.resultType);
         }
         case "binop": {
-            const left = evalExpr(expr.left, frame, functions, program, artifacts, stats, depth);
-            const right = evalExpr(expr.right, frame, functions, program, artifacts, stats, depth);
+            const left = evalExpr(expr.left, frame, ctx, depth);
+            const right = evalExpr(expr.right, frame, ctx, depth);
             return evalBinary(expr.op, left, right, expr.resultType);
         }
         case "call": {
-            const args = expr.args.map((arg) => evalExpr(arg, frame, functions, program, artifacts, stats, depth));
-            return evalCall(expr.name, args, expr.resultType, functions, program, artifacts, stats, depth + 1);
+            const args = expr.args.map((arg) => evalExpr(arg, frame, ctx, depth));
+            return evalCall(expr.name, args, expr.resultType, ctx, depth + 1);
         }
         case "rec": {
-            const args = expr.args.map((arg) => evalExpr(arg, frame, functions, program, artifacts, stats, depth));
-            stats.recCalls += 1;
-            if (argsMatchCurrent(frame.fn, args, frame.params)) {
-                stats.recCollapses += 1;
-                return frame.currentRes ?? defaultValueForType(frame.fn.retType);
+            const args = expr.args.map((arg) => evalExpr(arg, frame, ctx, depth));
+            ctx.stats.recCalls += 1;
+            if (argsMatchCurrent(frame.fn, args, frame.params, ctx.structs)) {
+                ctx.stats.recCollapses += 1;
+                return frame.currentRes ?? defaultValueForType(frame.fn.retType, ctx.structs);
             }
             if (typeof frame.fuel === "number" && frame.fuel === 0) {
-                stats.gasExhaustions += 1;
-                return frame.currentRes ?? defaultValueForType(frame.fn.retType);
+                ctx.stats.gasExhaustions += 1;
+                return frame.currentRes ?? defaultValueForType(frame.fn.retType, ctx.structs);
             }
             if (typeof frame.fuel === "number") {
                 frame.fuel -= 1;
             }
-            return executeFunction(functions, program, frame.fn.name, args, artifacts, stats, depth + 1);
+            return executeFunction(ctx, frame.fn.name, args, depth + 1);
         }
         case "total_div": {
-            const left = evalExpr(expr.left, frame, functions, program, artifacts, stats, depth);
-            const right = evalExpr(expr.right, frame, functions, program, artifacts, stats, depth);
+            const left = evalExpr(expr.left, frame, ctx, depth);
+            const right = evalExpr(expr.right, frame, ctx, depth);
             return totalDiv(left, right, expr.resultType);
         }
         case "total_mod": {
-            const left = evalExpr(expr.left, frame, functions, program, artifacts, stats, depth);
-            const right = evalExpr(expr.right, frame, functions, program, artifacts, stats, depth);
+            const left = evalExpr(expr.left, frame, ctx, depth);
+            const right = evalExpr(expr.right, frame, ctx, depth);
             return totalMod(left, right, expr.resultType);
         }
         case "nan_to_zero":
-            return nanToZero(evalExpr(expr.value, frame, functions, program, artifacts, stats, depth));
+            return nanToZero(assertNumber(evalExpr(expr.value, frame, ctx, depth), "nan_to_zero"));
         case "sat_add": {
-            const left = evalExpr(expr.left, frame, functions, program, artifacts, stats, depth);
-            const right = evalExpr(expr.right, frame, functions, program, artifacts, stats, depth);
-            return saturateInt(left + right);
+            const left = evalExpr(expr.left, frame, ctx, depth);
+            const right = evalExpr(expr.right, frame, ctx, depth);
+            return saturateInt(assertNumber(left, "sat_add") + assertNumber(right, "sat_add"));
         }
         case "sat_sub": {
-            const left = evalExpr(expr.left, frame, functions, program, artifacts, stats, depth);
-            const right = evalExpr(expr.right, frame, functions, program, artifacts, stats, depth);
-            return saturateInt(left - right);
+            const left = evalExpr(expr.left, frame, ctx, depth);
+            const right = evalExpr(expr.right, frame, ctx, depth);
+            return saturateInt(assertNumber(left, "sat_sub") - assertNumber(right, "sat_sub"));
         }
         case "sat_mul": {
-            const left = evalExpr(expr.left, frame, functions, program, artifacts, stats, depth);
-            const right = evalExpr(expr.right, frame, functions, program, artifacts, stats, depth);
-            return saturateInt(left * right);
+            const left = evalExpr(expr.left, frame, ctx, depth);
+            const right = evalExpr(expr.right, frame, ctx, depth);
+            return saturateInt(assertNumber(left, "sat_mul") * assertNumber(right, "sat_mul"));
         }
         case "sat_neg":
-            return operandNeg(evalExpr(expr.operand, frame, functions, program, artifacts, stats, depth), expr.resultType);
-        case "index":
-        case "field":
+            return operandNeg(assertNumber(evalExpr(expr.operand, frame, ctx, depth), "sat_neg"), expr.resultType);
         case "struct_cons":
-        case "array_cons":
-        case "array_expr":
-        case "sum_expr":
-            throw new Error(`Runtime support for '${expr.tag}' is not implemented yet`);
+            return {
+                kind: "struct",
+                typeName: expr.name,
+                fields: expr.fields.map((field) => evalExpr(field, frame, ctx, depth)),
+            };
+        case "field": {
+            const target = evalExpr(expr.target, frame, ctx, depth);
+            if (!isStructValue(target)) {
+                throw new Error(`Field access on non-struct value for '${expr.field}'`);
+            }
+            const structDef = ctx.structs.get(target.typeName);
+            const fieldIndex = structDef?.fields.findIndex((field) => field.name === expr.field) ?? -1;
+            if (fieldIndex < 0) {
+                throw new Error(`Unknown field '${expr.field}' on struct '${target.typeName}'`);
+            }
+            return target.fields[fieldIndex] ?? defaultValueForType(expr.resultType, ctx.structs);
+        }
+        case "array_cons": {
+            const values = expr.elements.map((element) => evalExpr(element, frame, ctx, depth));
+            return materializeArrayValue(expr.resultType, values, ctx.structs);
+        }
+        case "array_expr": {
+            return evaluateArrayExpr(expr.resultType, expr.bindings, expr.body, frame, ctx, depth);
+        }
+        case "sum_expr": {
+            return evaluateSumExpr(expr.resultType, expr.bindings, expr.body, frame, ctx, depth);
+        }
+        case "index": {
+            const arrayValue = evalExpr(expr.array, frame, ctx, depth);
+            if (!isArrayValue(arrayValue)) {
+                throw new Error("Indexing requires an array value");
+            }
+            const indices = expr.indices.map((idx) => asPositiveIndex(evalExpr(idx, frame, ctx, depth)));
+            return indexArrayValue(arrayValue, indices, expr.resultType, ctx.structs);
+        }
         default: {
             const _never = expr;
             return _never;
         }
     }
 }
-function evalCall(name, args, resultType, functions, program, artifacts, stats, depth) {
+function evalCall(name, args, resultType, ctx, depth) {
     switch (name) {
         case "to_float":
-            return nanToZero(f32(args[0] ?? 0));
+            return nanToZero(f32(assertNumber(args[0], "to_float")));
         case "to_int":
-            return saturateInt(args[0] ?? 0);
+            return saturateInt(assertNumber(args[0], "to_int"));
         case "max":
-            return normalizeByType(Math.max(args[0] ?? 0, args[1] ?? 0), resultType);
+            return normalizeScalarByType(Math.max(assertNumber(args[0], "max"), assertNumber(args[1], "max")), resultType);
         case "min":
-            return normalizeByType(Math.min(args[0] ?? 0, args[1] ?? 0), resultType);
+            return normalizeScalarByType(Math.min(assertNumber(args[0], "min"), assertNumber(args[1], "min")), resultType);
         case "abs":
-            return normalizeByType(Math.abs(args[0] ?? 0), resultType);
+            return normalizeScalarByType(Math.abs(assertNumber(args[0], "abs")), resultType);
         case "clamp": {
-            const value = args[0] ?? 0;
-            const lo = args[1] ?? 0;
-            const hi = args[2] ?? 0;
-            return normalizeByType(Math.min(Math.max(value, lo), hi), resultType);
+            const value = assertNumber(args[0], "clamp");
+            const lo = assertNumber(args[1], "clamp");
+            const hi = assertNumber(args[2], "clamp");
+            return normalizeScalarByType(Math.min(Math.max(value, lo), hi), resultType);
         }
         case "sqrt":
-            return nanToZero(f32(Math.sqrt(args[0] ?? 0)));
+            return nanToZero(f32(Math.sqrt(assertNumber(args[0], "sqrt"))));
         case "exp":
-            return nanToZero(f32(Math.exp(args[0] ?? 0)));
+            return nanToZero(f32(Math.exp(assertNumber(args[0], "exp"))));
         case "sin":
-            return nanToZero(f32(Math.sin(args[0] ?? 0)));
+            return nanToZero(f32(Math.sin(assertNumber(args[0], "sin"))));
         case "cos":
-            return nanToZero(f32(Math.cos(args[0] ?? 0)));
+            return nanToZero(f32(Math.cos(assertNumber(args[0], "cos"))));
         case "tan":
-            return nanToZero(f32(Math.tan(args[0] ?? 0)));
+            return nanToZero(f32(Math.tan(assertNumber(args[0], "tan"))));
         case "asin":
-            return nanToZero(f32(Math.asin(args[0] ?? 0)));
+            return nanToZero(f32(Math.asin(assertNumber(args[0], "asin"))));
         case "acos":
-            return nanToZero(f32(Math.acos(args[0] ?? 0)));
+            return nanToZero(f32(Math.acos(assertNumber(args[0], "acos"))));
         case "atan":
-            return nanToZero(f32(Math.atan(args[0] ?? 0)));
+            return nanToZero(f32(Math.atan(assertNumber(args[0], "atan"))));
         case "log":
-            return nanToZero(f32(Math.log(args[0] ?? 0)));
+            return nanToZero(f32(Math.log(assertNumber(args[0], "log"))));
         case "pow":
-            return nanToZero(f32(Math.pow(args[0] ?? 0, args[1] ?? 0)));
+            return nanToZero(f32(Math.pow(assertNumber(args[0], "pow"), assertNumber(args[1], "pow"))));
         case "atan2":
-            return nanToZero(f32(Math.atan2(args[0] ?? 0, args[1] ?? 0)));
+            return nanToZero(f32(Math.atan2(assertNumber(args[0], "atan2"), assertNumber(args[1], "atan2"))));
         default:
-            return executeFunction(functions, program, name, args, artifacts, stats, depth);
+            return executeFunction(ctx, name, args, depth);
     }
 }
 function evalUnary(op, operand, resultType) {
     if (op !== "-") {
         throw new Error(`Unsupported unary op '${op}'`);
     }
-    return operandNeg(operand, resultType);
+    return operandNeg(assertNumber(operand, "unary -"), resultType);
 }
 function evalBinary(op, left, right, resultType) {
+    const a = assertNumber(left, `binary ${op}`);
+    const b = assertNumber(right, `binary ${op}`);
     if (resultType.tag === "int") {
         switch (op) {
             case "+":
-                return saturateInt(left + right);
+                return saturateInt(a + b);
             case "-":
-                return saturateInt(left - right);
+                return saturateInt(a - b);
             case "*":
-                return saturateInt(left * right);
+                return saturateInt(a * b);
             case "/":
-                return totalDiv(left, right, resultType);
+                return totalDiv(a, b, resultType);
             case "%":
-                return totalMod(left, right, resultType);
+                return totalMod(a, b, resultType);
             default:
                 throw new Error(`Unsupported int binary op '${op}'`);
         }
     }
     switch (op) {
         case "+":
-            return nanToZero(f32(left + right));
+            return nanToZero(f32(a + b));
         case "-":
-            return nanToZero(f32(left - right));
+            return nanToZero(f32(a - b));
         case "*":
-            return nanToZero(f32(left * right));
+            return nanToZero(f32(a * b));
         case "/":
-            return totalDiv(left, right, resultType);
+            return totalDiv(a, b, resultType);
         case "%":
-            return totalMod(left, right, resultType);
+            return totalMod(a, b, resultType);
         default:
             throw new Error(`Unsupported float binary op '${op}'`);
     }
 }
 function totalDiv(left, right, resultType) {
-    if (right === 0) {
-        return resultType.tag === "float" ? 0 : 0;
-    }
-    if (resultType.tag === "float") {
-        return nanToZero(f32(left / right));
-    }
-    return saturateInt(Math.trunc(left / right));
-}
-function totalMod(left, right, resultType) {
-    if (right === 0) {
+    const a = assertNumber(left, "total_div");
+    const b = assertNumber(right, "total_div");
+    if (b === 0) {
         return 0;
     }
     if (resultType.tag === "float") {
-        return nanToZero(f32(left % right));
+        return nanToZero(f32(a / b));
     }
-    return saturateInt(left % right);
+    return saturateInt(Math.trunc(a / b));
+}
+function totalMod(left, right, resultType) {
+    const a = assertNumber(left, "total_mod");
+    const b = assertNumber(right, "total_mod");
+    if (b === 0) {
+        return 0;
+    }
+    if (resultType.tag === "float") {
+        return nanToZero(f32(a % b));
+    }
+    return saturateInt(a % b);
 }
 function operandNeg(value, resultType) {
     if (resultType.tag === "int") {
@@ -308,7 +349,215 @@ function operandNeg(value, resultType) {
     }
     return nanToZero(f32(-value));
 }
-function normalizeByType(value, type) {
+function materializeArrayValue(arrayType, items, structs) {
+    const baseType = arrayLeafType(arrayType);
+    if (items.length === 0) {
+        return {
+            kind: "array",
+            elementType: baseType,
+            dims: [0],
+            values: [],
+        };
+    }
+    if (isArrayValue(items[0])) {
+        const first = items[0];
+        const dims = [items.length, ...first.dims];
+        const values = [];
+        for (const item of items) {
+            if (!isArrayValue(item) || item.dims.length !== first.dims.length || !sameDims(item.dims, first.dims)) {
+                throw new Error("Array literal requires nested arrays with matching dimensions");
+            }
+            values.push(...item.values);
+        }
+        return {
+            kind: "array",
+            elementType: arrayLeafType(first.elementType),
+            dims,
+            values,
+        };
+    }
+    return {
+        kind: "array",
+        elementType: baseType,
+        dims: [items.length],
+        values: items.map((item) => normalizeByType(item, baseType, structs)),
+    };
+}
+function evaluateArrayExpr(resultType, bindings, body, frame, ctx, depth) {
+    const values = [];
+    const prefixDims = [];
+    let suffixDims = null;
+    const walk = (index) => {
+        if (index === bindings.length) {
+            const bodyValue = evalExpr(body, frame, ctx, depth);
+            if (isArrayValue(bodyValue)) {
+                if (suffixDims === null) {
+                    suffixDims = [...bodyValue.dims];
+                }
+                else if (!sameDims(suffixDims, bodyValue.dims)) {
+                    throw new Error("array body produced ragged nested arrays");
+                }
+                values.push(...bodyValue.values);
+                return;
+            }
+            values.push(normalizeByType(bodyValue, arrayLeafType(resultType), ctx.structs));
+            return;
+        }
+        const binding = bindings[index];
+        const extent = asPositiveExtent(evalExpr(binding.expr, frame, ctx, depth));
+        if (prefixDims.length === index) {
+            prefixDims.push(extent);
+        }
+        else if (prefixDims[index] !== extent) {
+            throw new Error("array body produced ragged dimensions");
+        }
+        for (let i = 0; i < extent; i += 1) {
+            frame.env.set(binding.name, saturateInt(i));
+            walk(index + 1);
+        }
+        frame.env.delete(binding.name);
+    };
+    walk(0);
+    return {
+        kind: "array",
+        elementType: arrayLeafType(resultType),
+        dims: [...prefixDims, ...(suffixDims ?? [])],
+        values,
+    };
+}
+function evaluateSumExpr(resultType, bindings, body, frame, ctx, depth) {
+    let total = resultType.tag === "float" ? 0 : 0;
+    const walk = (index) => {
+        if (index === bindings.length) {
+            total = evalBinary("+", total, evalExpr(body, frame, ctx, depth), resultType);
+            return;
+        }
+        const binding = bindings[index];
+        const extent = asPositiveExtent(evalExpr(binding.expr, frame, ctx, depth));
+        for (let i = 0; i < extent; i += 1) {
+            frame.env.set(binding.name, saturateInt(i));
+            walk(index + 1);
+        }
+        frame.env.delete(binding.name);
+    };
+    walk(0);
+    return total;
+}
+function indexArrayValue(arrayValue, indices, resultType, structs) {
+    if (indices.length > arrayValue.dims.length) {
+        throw new Error("Array index rank mismatch");
+    }
+    let offset = 0;
+    for (let i = 0; i < indices.length; i += 1) {
+        const idx = clampIndexToDim(indices[i], arrayValue.dims[i]);
+        const dim = arrayValue.dims[i];
+        offset += idx * strideOf(arrayValue.dims, i);
+    }
+    if (indices.length === arrayValue.dims.length) {
+        return normalizeByType(arrayValue.values[offset] ?? defaultValueForType(resultType, structs), resultType, structs);
+    }
+    const remainingDims = arrayValue.dims.slice(indices.length);
+    const sliceLength = product(remainingDims);
+    return {
+        kind: "array",
+        elementType: arrayValue.elementType,
+        dims: remainingDims,
+        values: arrayValue.values.slice(offset, offset + sliceLength),
+    };
+}
+function argsMatchCurrent(fn, nextArgs, currentParams, structs) {
+    if (nextArgs.length !== currentParams.length) {
+        return false;
+    }
+    for (let i = 0; i < nextArgs.length; i += 1) {
+        if (!sameValue(nextArgs[i], currentParams[i], fn.params[i]?.type, structs)) {
+            return false;
+        }
+    }
+    return true;
+}
+function sameValue(a, b, type, structs) {
+    if (!type || type.tag === "int") {
+        return saturateInt(assertNumber(a, "int equality")) === saturateInt(assertNumber(b, "int equality"));
+    }
+    if (type.tag === "float") {
+        const left = assertNumber(a, "float equality");
+        const right = assertNumber(b, "float equality");
+        if (Object.is(left, -0) && Object.is(right, 0)) {
+            return true;
+        }
+        if (Object.is(left, 0) && Object.is(right, -0)) {
+            return true;
+        }
+        if (!Number.isFinite(left) || !Number.isFinite(right)) {
+            return left === right;
+        }
+        return ulpDistance(left, right) <= 1;
+    }
+    if (type.tag === "named") {
+        if (!isStructValue(a) || !isStructValue(b) || a.typeName !== b.typeName) {
+            return false;
+        }
+        const structDef = structs.get(type.name);
+        if (!structDef) {
+            return false;
+        }
+        for (let i = 0; i < structDef.fields.length; i += 1) {
+            if (!sameValue(a.fields[i], b.fields[i], structDef.fields[i]?.type, structs)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (type.tag === "array") {
+        if (!isArrayValue(a) || !isArrayValue(b)) {
+            return false;
+        }
+        if (!sameDims(a.dims, b.dims) || a.values.length !== b.values.length) {
+            return false;
+        }
+        for (let i = 0; i < a.values.length; i += 1) {
+            if (!sameValue(a.values[i], b.values[i], type.element, structs)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+function normalizeByType(value, type, structs) {
+    if (!type) {
+        return value;
+    }
+    if (type.tag === "int" || type.tag === "float") {
+        return normalizeScalarByType(assertNumber(value, "normalize"), type);
+    }
+    if (type.tag === "named") {
+        if (!isStructValue(value)) {
+            throw new Error(`Expected struct value for '${type.name}'`);
+        }
+        const structDef = structs?.get(type.name);
+        const fields = structDef?.fields ?? [];
+        return {
+            kind: "struct",
+            typeName: type.name,
+            fields: fields.map((field, idx) => normalizeByType(value.fields[idx], field.type, structs)),
+        };
+    }
+    if (type.tag !== "array") {
+        return value;
+    }
+    if (!isArrayValue(value)) {
+        throw new Error("Expected array value");
+    }
+    return {
+        kind: "array",
+        elementType: arrayLeafType(type),
+        dims: [...value.dims],
+        values: value.values.map((item) => normalizeByType(item, type.element, structs)),
+    };
+}
+function normalizeScalarByType(value, type) {
     if (!type) {
         return value;
     }
@@ -319,6 +568,63 @@ function normalizeByType(value, type) {
         return nanToZero(f32(value));
     }
     return value;
+}
+function assertNumber(value, context) {
+    if (typeof value !== "number") {
+        throw new Error(`Expected numeric value in ${context}`);
+    }
+    return value;
+}
+function asScalarArgs(args) {
+    if (args.every((arg) => typeof arg === "number")) {
+        return args;
+    }
+    return null;
+}
+function isStructValue(value) {
+    return typeof value === "object" && value !== null && value.kind === "struct";
+}
+function isArrayValue(value) {
+    return typeof value === "object" && value !== null && value.kind === "array";
+}
+function arrayLeafType(type) {
+    return type.tag === "array" ? arrayLeafType(type.element) : type;
+}
+function sameDims(a, b) {
+    if (a.length !== b.length) {
+        return false;
+    }
+    for (let i = 0; i < a.length; i += 1) {
+        if (a[i] !== b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+function strideOf(dims, index) {
+    return product(dims.slice(index + 1));
+}
+function product(values) {
+    return values.reduce((acc, value) => acc * value, 1);
+}
+function asPositiveExtent(value) {
+    const extent = saturateInt(assertNumber(value, "comprehension extent"));
+    return Math.max(1, extent);
+}
+function asPositiveIndex(value) {
+    return saturateInt(assertNumber(value, "array index"));
+}
+function clampIndexToDim(index, dim) {
+    if (dim <= 1) {
+        return 0;
+    }
+    if (index < 0) {
+        return 0;
+    }
+    if (index >= dim) {
+        return dim - 1;
+    }
+    return index;
 }
 function saturateInt(value) {
     if (!Number.isFinite(value)) {
@@ -339,35 +645,6 @@ function f32(value) {
 function nanToZero(value) {
     return Number.isNaN(value) ? 0 : value;
 }
-function argsMatchCurrent(fn, nextArgs, currentParams) {
-    if (nextArgs.length !== currentParams.length) {
-        return false;
-    }
-    for (let i = 0; i < nextArgs.length; i += 1) {
-        if (!sameValue(nextArgs[i], currentParams[i], fn.params[i]?.type)) {
-            return false;
-        }
-    }
-    return true;
-}
-function sameValue(a, b, type) {
-    if (!type || type.tag === "int") {
-        return saturateInt(a) === saturateInt(b);
-    }
-    if (type.tag === "float") {
-        if (Object.is(a, -0) && Object.is(b, 0)) {
-            return true;
-        }
-        if (Object.is(a, 0) && Object.is(b, -0)) {
-            return true;
-        }
-        if (!Number.isFinite(a) || !Number.isFinite(b)) {
-            return a === b;
-        }
-        return ulpDistance(a, b) <= 1;
-    }
-    return a === b;
-}
 function ulpDistance(a, b) {
     const buf = new ArrayBuffer(4);
     const view = new DataView(buf);
@@ -387,6 +664,9 @@ function getInitialFuel(fn) {
     return gas.limit === "inf" ? "inf" : gas.limit;
 }
 function tryEvalLut(impl, args) {
+    if (impl.resultType.tag !== "int" && impl.resultType.tag !== "float") {
+        return null;
+    }
     if (impl.parameterRanges.length !== args.length) {
         return null;
     }
@@ -404,14 +684,14 @@ function tryEvalLut(impl, args) {
         index += (arg - range.lo) * stride;
         stride *= range.hi - range.lo + 1;
     }
-    return normalizeByType(impl.table[index] ?? 0, impl.resultType);
+    return normalizeScalarByType(impl.table[index] ?? 0, impl.resultType);
 }
 function evalClosedFormLinear(impl, args) {
     const x = saturateInt(args[impl.paramIndex] ?? 0);
     const steps = x <= 0 ? 1 : Math.ceil(x / impl.decrement) + 1;
     return saturateInt(impl.baseValue + steps * impl.stepValue);
 }
-function tryApplyAitken(impl, frame, nextArgs) {
+function tryApplyAitken(impl, frame, nextArgs, structs) {
     if (frame.aitkenHistory.length < impl.afterIterations) {
         return null;
     }
@@ -435,13 +715,12 @@ function tryApplyAitken(impl, frame, nextArgs) {
     if (!Number.isFinite(extrapolated)) {
         return null;
     }
-    if (Math.abs(extrapolated - s2) >
-        Math.max(1, Math.abs(delta1) * 64)) {
+    if (Math.abs(extrapolated - s2) > Math.max(1, Math.abs(delta1) * 64)) {
         return null;
     }
     if (impl.targetParamIndex !== null) {
         const target = frame.params[impl.targetParamIndex];
-        if (target === undefined) {
+        if (typeof target !== "number") {
             return null;
         }
         const currentDistance = Math.abs(s2 - target);
@@ -450,20 +729,39 @@ function tryApplyAitken(impl, frame, nextArgs) {
             return null;
         }
     }
-    if (sameValue(extrapolated, s2, frame.fn.params[impl.stateParamIndex]?.type)) {
+    if (sameValue(extrapolated, s2, frame.fn.params[impl.stateParamIndex]?.type, structs)) {
         return null;
     }
     const rewritten = [...nextArgs];
-    rewritten[impl.stateParamIndex] = normalizeByType(extrapolated, frame.fn.params[impl.stateParamIndex]?.type);
+    rewritten[impl.stateParamIndex] = normalizeByType(extrapolated, frame.fn.params[impl.stateParamIndex]?.type, structs);
     return rewritten;
 }
 function applyLinearSpeculation(impl, args, fn) {
     const rewritten = [...args];
-    rewritten[impl.varyingParamIndex] = normalizeByType(impl.fixedPoint, fn.params[impl.varyingParamIndex]?.type);
+    rewritten[impl.varyingParamIndex] = normalizeScalarByType(impl.fixedPoint, fn.params[impl.varyingParamIndex]?.type);
     return rewritten;
 }
-function defaultValueForType(type) {
-    return type.tag === "float" ? 0 : 0;
+function defaultValueForType(type, structs) {
+    if (type.tag === "float") {
+        return 0;
+    }
+    if (type.tag === "int" || type.tag === "void") {
+        return 0;
+    }
+    if (type.tag === "named") {
+        const struct = structs.get(type.name);
+        return {
+            kind: "struct",
+            typeName: type.name,
+            fields: (struct?.fields ?? []).map((field) => defaultValueForType(field.type, structs)),
+        };
+    }
+    return {
+        kind: "array",
+        elementType: arrayLeafType(type),
+        dims: new Array(type.dims).fill(0),
+        values: [],
+    };
 }
 function createStats() {
     return {

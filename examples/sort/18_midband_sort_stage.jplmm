@@ -1,38 +1,38 @@
 struct Vec8 { a:int, b:int, c:int, d:int, e:int, f:int, g:int, h:int }
 
-fn pack8(a:int, b:int, c:int, d:int, e:int, f:int, g:int, h:int): Vec8 {
+fun pack8(a:int, b:int, c:int, d:int, e:int, f:int, g:int, h:int): Vec8 {
   ret Vec8 { a, b, c, d, e, f, g, h };
 }
 
-fn stage8_1(v:Vec8): Vec8 {
+fun stage8_1(v:Vec8): Vec8 {
   ret pack8(min(v.a, v.b), max(v.a, v.b), min(v.c, v.d), max(v.c, v.d), min(v.e, v.f), max(v.e, v.f), min(v.g, v.h), max(v.g, v.h));
 }
 
-fn stage8_2(v:Vec8): Vec8 {
+fun stage8_2(v:Vec8): Vec8 {
   ret pack8(min(v.a, v.c), min(v.b, v.d), max(v.a, v.c), max(v.b, v.d), min(v.e, v.g), min(v.f, v.h), max(v.e, v.g), max(v.f, v.h));
 }
 
-fn stage8_3(v:Vec8): Vec8 {
+fun stage8_3(v:Vec8): Vec8 {
   ret pack8(min(v.a, v.e), min(v.b, v.f), min(v.c, v.g), min(v.d, v.h), max(v.a, v.e), max(v.b, v.f), max(v.c, v.g), max(v.d, v.h));
 }
 
-fn stage8_4(v:Vec8): Vec8 {
+fun stage8_4(v:Vec8): Vec8 {
   ret pack8(v.a, min(v.b, v.c), max(v.b, v.c), v.d, v.e, min(v.f, v.g), max(v.f, v.g), v.h);
 }
 
-fn stage8_5(v:Vec8): Vec8 {
+fun stage8_5(v:Vec8): Vec8 {
   ret pack8(v.a, min(v.b, v.e), min(v.c, v.f), min(v.d, v.g), max(v.b, v.e), max(v.c, v.f), max(v.d, v.g), v.h);
 }
 
-fn stage8_6(v:Vec8): Vec8 {
+fun stage8_6(v:Vec8): Vec8 {
   ret pack8(v.a, v.b, min(v.c, v.e), min(v.d, v.f), max(v.c, v.e), max(v.d, v.f), v.g, v.h);
 }
 
-fn stage8_7(v:Vec8): Vec8 {
+fun stage8_7(v:Vec8): Vec8 {
   ret pack8(v.a, v.b, v.c, min(v.d, v.e), max(v.d, v.e), v.f, v.g, v.h);
 }
 
-fn sort8(v:Vec8): Vec8 {
+fun sort8(v:Vec8): Vec8 {
   let s1 = stage8_1(v);
   let s2 = stage8_2(s1);
   let s3 = stage8_3(s2);
@@ -42,16 +42,16 @@ fn sort8(v:Vec8): Vec8 {
   ret stage8_7(s6);
 }
 
-fn sort_midband_sort_stage(blocks:Vec8[], n:int): Vec8[] {
+fun sort_midband_sort_stage(blocks:Vec8[], n:int): Vec8[] {
   ret array [i:n] sort8(blocks[i]);
 }
 
-fn middle_midband_sort_stage(blocks:Vec8[], n:int): int[] {
+fun middle_midband_sort_stage(blocks:Vec8[], n:int): int[] {
   let out = sort_midband_sort_stage(blocks, n);
   ret array [i:n] (out[i].d + out[i].e) / 2;
 }
 
-fn checksum(blocks:Vec8[], n:int): int {
+fun checksum(blocks:Vec8[], n:int): int {
   let mids = middle_midband_sort_stage(blocks, n);
   ret sum [i:n] mids[i];
 }

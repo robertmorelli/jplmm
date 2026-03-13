@@ -1,4 +1,4 @@
-export type TokenKind = "ident" | "int" | "float" | "keyword" | "symbol" | "eof";
+export type TokenKind = "ident" | "int" | "float" | "string" | "keyword" | "symbol" | "eof";
 export type Token = {
     kind: TokenKind;
     text: string;

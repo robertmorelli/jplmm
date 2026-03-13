@@ -129,6 +129,7 @@ function lowerFunction(
 
   return {
     name: cmd.name,
+    keyword: cmd.keyword,
     params: cmd.params,
     retType: cmd.retType,
     body,

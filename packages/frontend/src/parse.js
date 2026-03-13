@@ -1,6 +1,8 @@
 import { REMOVED_KEYWORDS, tokenize } from "@jplmm/grammar";
 import { error } from "./errors";
+const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
+const UINT32_MAX = 4294967296;
 class Parser {
     tokens;
     idx = 0;
@@ -12,11 +14,9 @@ class Parser {
     parseProgram() {
         const commands = [];
         while (!this.isEof()) {
-            if (this.acceptKeyword("fn")) {
-                commands.push(this.parseFnDef());
-            }
-            else if (this.acceptKeyword("let")) {
-                commands.push(this.parseLetCmd());
+            const command = this.parseCmd();
+            if (command) {
+                commands.push(command);
             }
             else {
                 const t = this.peek();
@@ -27,16 +27,58 @@ class Parser {
         }
         return { program: { commands }, diagnostics: this.diagnostics };
     }
-    parseFnDef() {
-        const name = this.expectIdent("Expected function name after 'fn'");
+    parseCmd() {
+        const throwsErrorToken = this.acceptKeywordToken("throwserror");
+        if (throwsErrorToken) {
+            return this.parseThrowsErrorCmd(throwsErrorToken);
+        }
+        const funToken = this.acceptKeywordToken("fun")
+            ?? this.acceptKeywordToken("def")
+            ?? this.acceptKeywordToken("ref")
+            ?? this.acceptKeywordToken("fn");
+        if (funToken) {
+            return this.parseFnDef(funToken);
+        }
+        const letToken = this.acceptKeywordToken("let");
+        if (letToken) {
+            return this.parseLetCmd(letToken);
+        }
+        const structToken = this.acceptKeywordToken("struct");
+        if (structToken) {
+            return this.parseStructDef(structToken);
+        }
+        const readToken = this.acceptKeywordToken("read");
+        if (readToken) {
+            return this.parseReadImageCmd(readToken);
+        }
+        const writeToken = this.acceptKeywordToken("write");
+        if (writeToken) {
+            return this.parseWriteImageCmd(writeToken);
+        }
+        const printToken = this.acceptKeywordToken("print");
+        if (printToken) {
+            return this.parsePrintCmd(printToken);
+        }
+        const showToken = this.acceptWordToken("out") ?? this.acceptKeywordToken("show");
+        if (showToken) {
+            return this.parseShowCmd(showToken);
+        }
+        const timeToken = this.acceptKeywordToken("time");
+        if (timeToken) {
+            return this.parseTimeCmd(timeToken);
+        }
+        return null;
+    }
+    parseFnDef(startToken) {
+        const nameToken = this.expectIdentToken("Expected function name after 'fun'");
         this.expectSymbol("(", "Expected '(' after function name");
         const params = [];
         if (!this.acceptSymbol(")")) {
             do {
-                const paramName = this.expectIdent("Expected parameter name");
+                const paramName = this.expectIdentToken("Expected parameter name");
                 this.expectSymbol(":", "Expected ':' after parameter name");
                 const paramType = this.parseType();
-                params.push({ name: paramName, type: paramType });
+                params.push(this.withSpan({ name: paramName.text, type: paramType }, paramName.start, this.nodeEnd(paramType)));
             } while (this.acceptSymbol(","));
             this.expectSymbol(")", "Expected ')' after parameter list");
         }
@@ -51,37 +93,101 @@ class Parser {
             }
             this.acceptSymbol(";");
         }
-        return {
+        return this.withSpan({
             tag: "fn_def",
-            name,
+            keyword: startToken.text,
+            name: nameToken.text,
             params,
             retType,
             body,
             id: this.newId(),
-        };
+        }, startToken.start, this.lastEnd());
     }
-    parseLetCmd() {
+    parseStructDef(startToken) {
+        const nameToken = this.expectIdentToken("Expected struct name after 'struct'");
+        this.expectSymbol("{", "Expected '{' after struct name");
+        const fields = [];
+        while (!this.acceptSymbol("}") && !this.isEof()) {
+            const fieldName = this.expectIdentToken("Expected struct field name");
+            this.expectSymbol(":", "Expected ':' after struct field name");
+            const fieldType = this.parseType();
+            fields.push(this.withSpan({ name: fieldName.text, type: fieldType }, fieldName.start, this.nodeEnd(fieldType)));
+            if (!this.acceptSymbol(",")) {
+                this.acceptSymbol(";");
+            }
+        }
+        return this.withSpan({ tag: "struct_def", name: nameToken.text, fields, id: this.newId() }, startToken.start, this.lastEnd());
+    }
+    parseLetCmd(startToken) {
         const lvalue = this.parseLValue();
         this.expectSymbol("=", "Expected '=' in top-level let command");
         const expr = this.parseExpr();
-        return { tag: "let_cmd", lvalue, expr, id: this.newId() };
+        return this.withSpan({ tag: "let_cmd", lvalue, expr, id: this.newId() }, startToken.start, this.nodeEnd(expr));
+    }
+    parseReadImageCmd(startToken) {
+        this.expectKeyword("image", "Expected 'image' after 'read'");
+        const filename = this.expectStringToken("Expected string literal after 'read image'");
+        this.expectKeyword("to", "Expected 'to' after image filename");
+        const target = this.parseArgument();
+        return this.withSpan({ tag: "read_image", filename: filename.text, target, id: this.newId() }, startToken.start, this.nodeEnd(target));
+    }
+    parseWriteImageCmd(startToken) {
+        this.expectKeyword("image", "Expected 'image' after 'write'");
+        const expr = this.parseExpr();
+        this.expectKeyword("to", "Expected 'to' after image expression");
+        const filename = this.expectStringToken("Expected string literal after 'to'");
+        return this.withSpan({ tag: "write_image", expr, filename: filename.text, id: this.newId() }, startToken.start, filename.end);
+    }
+    parsePrintCmd(startToken) {
+        const message = this.expectStringToken("Expected string literal after 'print'");
+        return this.withSpan({ tag: "print", message: message.text, id: this.newId() }, startToken.start, message.end);
+    }
+    parseShowCmd(startToken) {
+        const expr = this.parseExpr();
+        return this.withSpan({ tag: "show", expr, id: this.newId() }, startToken.start, this.nodeEnd(expr));
+    }
+    parseTimeCmd(startToken) {
+        const cmd = this.parseCmd();
+        if (!cmd) {
+            const t = this.peek();
+            this.diagnostics.push(error("Expected a command after 'time'", t.start, t.end));
+            return this.withSpan({ tag: "print", message: "", id: this.newId() }, startToken.start, t.end);
+        }
+        return this.withSpan({ tag: "time", cmd, id: this.newId() }, startToken.start, this.nodeEnd(cmd));
+    }
+    parseThrowsErrorCmd(annotation) {
+        this.diagnostics.push(error("'throwserror' is unsatisfiable in JPL--: verified functions cannot throw runtime errors", annotation.start, annotation.end, "THROWS_ERROR_IMPOSSIBLE"));
+        const cmd = this.parseCmd();
+        if (!cmd) {
+            const t = this.peek();
+            this.diagnostics.push(error("Expected a function definition after 'throwserror'", t.start, t.end, "THROWS_ERROR_TARGET"));
+            return this.withSpan({ tag: "print", message: "", id: this.newId() }, annotation.start, t.end);
+        }
+        if (cmd.tag !== "fn_def" && !(cmd.tag === "time" && cmd.cmd.tag === "fn_def")) {
+            this.diagnostics.push(error("'throwserror' can only annotate a function definition", annotation.start, annotation.end, "THROWS_ERROR_TARGET"));
+        }
+        return cmd;
     }
     parseStmt() {
-        if (this.acceptKeyword("let")) {
+        const letToken = this.acceptKeywordToken("let");
+        if (letToken) {
             const lvalue = this.parseLValue();
             this.expectSymbol("=", "Expected '=' in let statement");
             const expr = this.parseExpr();
-            return { tag: "let", lvalue, expr, id: this.newId() };
+            return this.withSpan({ tag: "let", lvalue, expr, id: this.newId() }, letToken.start, this.nodeEnd(expr));
         }
-        if (this.acceptKeyword("ret")) {
+        const retToken = this.acceptKeywordToken("ret");
+        if (retToken) {
             const expr = this.parseExpr();
-            return { tag: "ret", expr, id: this.newId() };
+            return this.withSpan({ tag: "ret", expr, id: this.newId() }, retToken.start, this.nodeEnd(expr));
         }
-        if (this.acceptKeyword("rad")) {
+        const radToken = this.acceptKeywordToken("rad");
+        if (radToken) {
             const expr = this.parseExpr();
-            return { tag: "rad", expr, id: this.newId() };
+            return this.withSpan({ tag: "rad", expr, id: this.newId() }, radToken.start, this.nodeEnd(expr));
         }
-        if (this.acceptKeyword("gas")) {
+        const gasToken = this.acceptKeywordToken("gas");
+        if (gasToken) {
             const t = this.peek();
             let limit;
             if (this.acceptKeyword("inf")) {
@@ -96,7 +202,7 @@ class Parser {
                 this.advance();
                 return null;
             }
-            return { tag: "gas", limit, id: this.newId() };
+            return this.withSpan({ tag: "gas", limit, id: this.newId() }, gasToken.start, this.lastEnd());
         }
         const t = this.peek();
         this.diagnostics.push(error(`Unexpected token '${t.text}' in function body`, t.start, t.end));
@@ -106,23 +212,30 @@ class Parser {
     parseType() {
         const t = this.peek();
         let base;
-        if (this.acceptKeyword("int")) {
-            base = { tag: "int" };
-        }
-        else if (this.acceptKeyword("float")) {
-            base = { tag: "float" };
-        }
-        else if (this.acceptKeyword("void")) {
-            base = { tag: "void" };
-        }
-        else if (t.kind === "ident") {
-            this.advance();
-            base = { tag: "named", name: t.text };
+        const intToken = this.acceptKeywordToken("int");
+        if (intToken) {
+            base = this.withSpan({ tag: "int" }, intToken.start, intToken.end);
         }
         else {
-            this.diagnostics.push(error("Expected a type", t.start, t.end));
-            this.advance();
-            return { tag: "void" };
+            const floatToken = this.acceptKeywordToken("float");
+            if (floatToken) {
+                base = this.withSpan({ tag: "float" }, floatToken.start, floatToken.end);
+            }
+            else {
+                const voidToken = this.acceptKeywordToken("void");
+                if (voidToken) {
+                    base = this.withSpan({ tag: "void" }, voidToken.start, voidToken.end);
+                }
+                else if (t.kind === "ident") {
+                    this.advance();
+                    base = this.withSpan({ tag: "named", name: t.text }, t.start, t.end);
+                }
+                else {
+                    this.diagnostics.push(error("Expected a type", t.start, t.end));
+                    this.advance();
+                    return this.withSpan({ tag: "void" }, t.start, t.end);
+                }
+            }
         }
         let dims = 0;
         while (this.acceptSymbol("[")) {
@@ -130,13 +243,63 @@ class Parser {
             dims += 1;
         }
         if (dims > 0) {
-            return { tag: "array", element: base, dims };
+            return this.withSpan({ tag: "array", element: base, dims }, this.nodeStart(base), this.lastEnd());
         }
         return base;
     }
     parseLValue() {
-        const name = this.expectIdent("Expected variable name");
-        return { tag: "var", name };
+        const openParen = this.acceptSymbolToken("(");
+        if (openParen) {
+            const items = [];
+            if (!this.acceptSymbol(")")) {
+                do {
+                    items.push(this.parseLValue());
+                } while (this.acceptSymbol(","));
+                this.expectSymbol(")", "Expected ')' after tuple lvalue");
+            }
+            return this.withSpan({ tag: "tuple", items }, openParen.start, this.lastEnd());
+        }
+        const name = this.expectIdentToken("Expected variable name");
+        if (this.acceptSymbol(".")) {
+            const field = this.expectIdentToken("Expected field name after '.'");
+            return this.withSpan({ tag: "field", base: name.text, field: field.text }, name.start, field.end);
+        }
+        if (this.acceptSymbol("[")) {
+            const bracket = this.tokens[this.idx - 1];
+            this.consumeIndexSuffix();
+            this.diagnostics.push(error("Array index assignment is not part of JPL--; arrays are immutable values", bracket.start, bracket.end, "IMMUTABLE_LVALUE"));
+            return this.withSpan({ tag: "var", name: name.text }, name.start, name.end);
+        }
+        return this.withSpan({ tag: "var", name: name.text }, name.start, name.end);
+    }
+    consumeIndexSuffix() {
+        let depth = 1;
+        while (!this.isEof() && depth > 0) {
+            if (this.acceptSymbol("[")) {
+                depth += 1;
+                continue;
+            }
+            if (this.acceptSymbol("]")) {
+                depth -= 1;
+                continue;
+            }
+            this.advance();
+        }
+    }
+    parseArgument() {
+        const openParen = this.acceptSymbolToken("(");
+        if (openParen) {
+            const items = [];
+            if (!this.acceptSymbol(")")) {
+                do {
+                    items.push(this.parseArgument());
+                } while (this.acceptSymbol(","));
+                this.expectSymbol(")", "Expected ')' after tuple argument");
+            }
+            return this.withSpan({ tag: "tuple", items }, openParen.start, this.lastEnd());
+        }
+        const name = this.expectIdentToken("Expected variable name");
+        return this.withSpan({ tag: "var", name: name.text }, name.start, name.end);
     }
     parseExpr() {
         return this.parseAddSub();
@@ -145,10 +308,12 @@ class Parser {
         let expr = this.parseMulDiv();
         while (true) {
             if (this.acceptSymbol("+")) {
-                expr = { tag: "binop", op: "+", left: expr, right: this.parseMulDiv(), id: this.newId() };
+                const right = this.parseMulDiv();
+                expr = this.withSpan({ tag: "binop", op: "+", left: expr, right, id: this.newId() }, this.nodeStart(expr), this.nodeEnd(right));
             }
             else if (this.acceptSymbol("-")) {
-                expr = { tag: "binop", op: "-", left: expr, right: this.parseMulDiv(), id: this.newId() };
+                const right = this.parseMulDiv();
+                expr = this.withSpan({ tag: "binop", op: "-", left: expr, right, id: this.newId() }, this.nodeStart(expr), this.nodeEnd(right));
             }
             else {
                 break;
@@ -160,13 +325,16 @@ class Parser {
         let expr = this.parseUnary();
         while (true) {
             if (this.acceptSymbol("*")) {
-                expr = { tag: "binop", op: "*", left: expr, right: this.parseUnary(), id: this.newId() };
+                const right = this.parseUnary();
+                expr = this.withSpan({ tag: "binop", op: "*", left: expr, right, id: this.newId() }, this.nodeStart(expr), this.nodeEnd(right));
             }
             else if (this.acceptSymbol("/")) {
-                expr = { tag: "binop", op: "/", left: expr, right: this.parseUnary(), id: this.newId() };
+                const right = this.parseUnary();
+                expr = this.withSpan({ tag: "binop", op: "/", left: expr, right, id: this.newId() }, this.nodeStart(expr), this.nodeEnd(right));
             }
             else if (this.acceptSymbol("%")) {
-                expr = { tag: "binop", op: "%", left: expr, right: this.parseUnary(), id: this.newId() };
+                const right = this.parseUnary();
+                expr = this.withSpan({ tag: "binop", op: "%", left: expr, right, id: this.newId() }, this.nodeStart(expr), this.nodeEnd(right));
             }
             else {
                 break;
@@ -175,8 +343,30 @@ class Parser {
         return expr;
     }
     parseUnary() {
-        if (this.acceptSymbol("-")) {
-            return { tag: "unop", op: "-", operand: this.parseUnary(), id: this.newId() };
+        const minusToken = this.acceptSymbolToken("-");
+        if (minusToken) {
+            const next = this.peek();
+            if (next.kind === "int") {
+                this.advance();
+                const value = parseInt(next.text, 10);
+                if (!Number.isSafeInteger(value) || value > UINT32_MAX / 2) {
+                    this.diagnostics.push(error("Integer literal out of 32-bit range", next.start, next.end));
+                }
+                if (value === UINT32_MAX / 2) {
+                    return this.withSpan({ tag: "int_lit", value: INT32_MIN, id: this.newId() }, minusToken.start, next.end);
+                }
+                return this.withSpan({ tag: "int_lit", value: -value, id: this.newId() }, minusToken.start, next.end);
+            }
+            if (next.kind === "float") {
+                this.advance();
+                const value = parseFloat(next.text);
+                if (!Number.isFinite(Math.fround(-value))) {
+                    this.diagnostics.push(error("Float literal out of 32-bit range", next.start, next.end, "FLOAT_RANGE"));
+                }
+                return this.withSpan({ tag: "float_lit", value: -value, id: this.newId() }, minusToken.start, next.end);
+            }
+            const operand = this.parseUnary();
+            return this.withSpan({ tag: "unop", op: "-", operand, id: this.newId() }, minusToken.start, this.nodeEnd(operand));
         }
         return this.parsePostfix();
     }
@@ -184,8 +374,8 @@ class Parser {
         let expr = this.parsePrimary();
         while (true) {
             if (this.acceptSymbol(".")) {
-                const field = this.expectIdent("Expected field name after '.'");
-                expr = { tag: "field", target: expr, field, id: this.newId() };
+                const field = this.expectIdentToken("Expected field name after '.'");
+                expr = this.withSpan({ tag: "field", target: expr, field: field.text, id: this.newId() }, this.nodeStart(expr), field.end);
                 continue;
             }
             if (this.acceptSymbol("[")) {
@@ -196,7 +386,7 @@ class Parser {
                     } while (this.acceptSymbol(","));
                     this.expectSymbol("]", "Expected ']' after indices");
                 }
-                expr = { tag: "index", array: expr, indices, id: this.newId() };
+                expr = this.withSpan({ tag: "index", array: expr, indices, id: this.newId() }, this.nodeStart(expr), this.lastEnd());
                 continue;
             }
             break;
@@ -211,19 +401,26 @@ class Parser {
             if (!Number.isSafeInteger(value) || value > INT32_MAX) {
                 this.diagnostics.push(error("Integer literal out of 32-bit range", t.start, t.end));
             }
-            return { tag: "int_lit", value, id: this.newId() };
+            return this.withSpan({ tag: "int_lit", value, id: this.newId() }, t.start, t.end);
         }
         if (t.kind === "float") {
             this.advance();
-            return { tag: "float_lit", value: parseFloat(t.text), id: this.newId() };
+            const value = parseFloat(t.text);
+            if (!Number.isFinite(Math.fround(value))) {
+                this.diagnostics.push(error("Float literal out of 32-bit range", t.start, t.end, "FLOAT_RANGE"));
+            }
+            return this.withSpan({ tag: "float_lit", value, id: this.newId() }, t.start, t.end);
         }
-        if (this.acceptKeyword("void")) {
-            return { tag: "void_lit", id: this.newId() };
+        const voidToken = this.acceptKeywordToken("void");
+        if (voidToken) {
+            return this.withSpan({ tag: "void_lit", id: this.newId() }, voidToken.start, voidToken.end);
         }
-        if (this.acceptKeyword("res")) {
-            return { tag: "res", id: this.newId() };
+        const resToken = this.acceptKeywordToken("res");
+        if (resToken) {
+            return this.withSpan({ tag: "res", id: this.newId() }, resToken.start, resToken.end);
         }
-        if (this.acceptKeyword("rec")) {
+        const recToken = this.acceptKeywordToken("rec");
+        if (recToken) {
             this.expectSymbol("(", "Expected '(' after rec");
             const args = [];
             if (!this.acceptSymbol(")")) {
@@ -232,7 +429,19 @@ class Parser {
                 } while (this.acceptSymbol(","));
                 this.expectSymbol(")", "Expected ')' after rec arguments");
             }
-            return { tag: "rec", args, id: this.newId() };
+            return this.withSpan({ tag: "rec", args, id: this.newId() }, recToken.start, this.lastEnd());
+        }
+        const arrayToken = this.acceptKeywordToken("array");
+        if (arrayToken) {
+            return this.parseComprehension("array_expr", arrayToken);
+        }
+        const sumToken = this.acceptKeywordToken("sum");
+        if (sumToken) {
+            return this.parseComprehension("sum_expr", sumToken);
+        }
+        const openBracket = this.acceptSymbolToken("[");
+        if (openBracket) {
+            return this.parseArrayLiteral(openBracket);
         }
         if (this.acceptSymbol("(")) {
             const expr = this.parseExpr();
@@ -242,7 +451,7 @@ class Parser {
         if (t.kind === "ident" && REMOVED_KEYWORDS.has(t.text)) {
             this.diagnostics.push(error(`'${t.text}' is not a keyword in JPL--`, t.start, t.end));
             this.advance();
-            return { tag: "void_lit", id: this.newId() };
+            return this.withSpan({ tag: "void_lit", id: this.newId() }, t.start, t.end);
         }
         if (t.kind === "ident") {
             this.advance();
@@ -254,13 +463,58 @@ class Parser {
                     } while (this.acceptSymbol(","));
                     this.expectSymbol(")", "Expected ')' after call arguments");
                 }
-                return { tag: "call", name: t.text, args, id: this.newId() };
+                return this.withSpan({ tag: "call", name: t.text, args, id: this.newId() }, t.start, this.lastEnd());
             }
-            return { tag: "var", name: t.text, id: this.newId() };
+            if (this.acceptSymbol("{")) {
+                const fields = [];
+                if (!this.acceptSymbol("}")) {
+                    do {
+                        fields.push(this.parseExpr());
+                    } while (this.acceptSymbol(","));
+                    this.expectSymbol("}", "Expected '}' after struct constructor fields");
+                }
+                return this.withSpan({ tag: "struct_cons", name: t.text, fields, id: this.newId() }, t.start, this.lastEnd());
+            }
+            return this.withSpan({ tag: "var", name: t.text, id: this.newId() }, t.start, t.end);
         }
         this.diagnostics.push(error(`Unexpected token '${t.text}' in expression`, t.start, t.end));
         this.advance();
-        return { tag: "void_lit", id: this.newId() };
+        return this.withSpan({ tag: "void_lit", id: this.newId() }, t.start, t.end);
+    }
+    parseArrayLiteral(startToken) {
+        const elements = [];
+        if (!this.acceptSymbol("]")) {
+            do {
+                elements.push(this.parseExpr());
+            } while (this.acceptSymbol(","));
+            this.expectSymbol("]", "Expected ']' after array literal elements");
+        }
+        return this.withSpan({ tag: "array_cons", elements, id: this.newId() }, startToken.start, this.lastEnd());
+    }
+    parseComprehension(tag, startToken) {
+        this.expectSymbol("[", `Expected '[' after ${tag === "array_expr" ? "array" : "sum"}`);
+        const bindings = this.parseBindings();
+        this.expectSymbol("]", "Expected ']' after comprehension bindings");
+        const body = this.parseExpr();
+        if (body.tag === tag) {
+            return this.withSpan({
+                tag,
+                bindings: [...bindings, ...body.bindings],
+                body: body.body,
+                id: this.newId(),
+            }, startToken.start, this.nodeEnd(body));
+        }
+        return this.withSpan({ tag, bindings, body, id: this.newId() }, startToken.start, this.nodeEnd(body));
+    }
+    parseBindings() {
+        const bindings = [];
+        do {
+            const name = this.expectIdentToken("Expected binder name in comprehension");
+            this.expectSymbol(":", "Expected ':' after comprehension binder");
+            const expr = this.parseExpr();
+            bindings.push(this.withSpan({ name: name.text, expr }, name.start, this.nodeEnd(expr)));
+        } while (this.acceptSymbol(","));
+        return bindings;
     }
     newId() {
         const id = this.nextId;
@@ -278,9 +532,20 @@ class Parser {
         this.idx += 1;
         return t;
     }
+    previous() {
+        return this.tokens[this.idx - 1] ?? this.tokens[0];
+    }
     acceptKeyword(text) {
         const t = this.peek();
         if (t.kind === "keyword" && t.text === text) {
+            this.advance();
+            return true;
+        }
+        return false;
+    }
+    acceptWord(text) {
+        const t = this.peek();
+        if ((t.kind === "keyword" || t.kind === "ident") && t.text === text) {
             this.advance();
             return true;
         }
@@ -301,6 +566,13 @@ class Parser {
         }
         this.diagnostics.push(error(message, t.start, t.end));
     }
+    expectKeyword(text, message) {
+        const t = this.peek();
+        if (this.acceptKeyword(text)) {
+            return;
+        }
+        this.diagnostics.push(error(message, t.start, t.end));
+    }
     expectIdent(message) {
         const t = this.peek();
         if (t.kind === "ident") {
@@ -315,6 +587,81 @@ class Parser {
         this.diagnostics.push(error(message, t.start, t.end));
         this.advance();
         return "_error";
+    }
+    expectString(message) {
+        const t = this.peek();
+        if (t.kind === "string") {
+            this.advance();
+            return t.text;
+        }
+        this.diagnostics.push(error(message, t.start, t.end));
+        if (!this.isEof()) {
+            this.advance();
+        }
+        return "";
+    }
+    acceptKeywordToken(text) {
+        const t = this.peek();
+        if (t.kind === "keyword" && t.text === text) {
+            this.advance();
+            return t;
+        }
+        return null;
+    }
+    acceptWordToken(text) {
+        const t = this.peek();
+        if ((t.kind === "keyword" || t.kind === "ident") && t.text === text) {
+            this.advance();
+            return t;
+        }
+        return null;
+    }
+    acceptSymbolToken(text) {
+        const t = this.peek();
+        if (t.kind === "symbol" && t.text === text) {
+            this.advance();
+            return t;
+        }
+        return null;
+    }
+    expectIdentToken(message) {
+        const t = this.peek();
+        if (t.kind === "ident") {
+            if (REMOVED_KEYWORDS.has(t.text)) {
+                this.diagnostics.push(error(`'${t.text}' is not a valid identifier in JPL--`, t.start, t.end));
+                this.advance();
+                return { ...t, text: "_error" };
+            }
+            this.advance();
+            return t;
+        }
+        this.diagnostics.push(error(message, t.start, t.end));
+        this.advance();
+        return { ...t, text: "_error" };
+    }
+    expectStringToken(message) {
+        const t = this.peek();
+        if (t.kind === "string") {
+            this.advance();
+            return t;
+        }
+        this.diagnostics.push(error(message, t.start, t.end));
+        if (!this.isEof()) {
+            this.advance();
+        }
+        return { ...t, text: "" };
+    }
+    withSpan(node, start, end) {
+        return { ...node, start, end };
+    }
+    nodeStart(node) {
+        return node.start ?? this.peek().start;
+    }
+    nodeEnd(node) {
+        return node.end ?? this.lastEnd();
+    }
+    lastEnd() {
+        return this.previous().end;
     }
 }
 export function parseSource(source) {

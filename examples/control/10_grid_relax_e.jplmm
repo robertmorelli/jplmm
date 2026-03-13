@@ -1,15 +1,21 @@
-fn smooth(grid:float[][], h:int, w:int): float[][] {
+fun smooth(grid:float[][], h:int, w:int): float[][] {
   ret array [y:h, x:w]
     (grid[y][x] + grid[clamp(y - 1, 0, h - 1)][x] + grid[clamp(y + 1, 0, h - 1)][x] + grid[y][clamp(x - 1, 0, w - 1)] + grid[y][clamp(x + 1, 0, w - 1)]) / 4.0;
 }
 
-fn relax(grid:float[][], h:int, w:int): float[][] {
-  ret grid;
-  ret rec(smooth(grid, h, w), h, w);
-  gas 7;
+fun blend_grid(grid:float[][], next:float[][], h:int, w:int, steps:int): float[][] {
+  let gate = to_float(min(1, max(0, steps)));
+  ret array [y:h, x:w] grid[y][x] + gate * (next[y][x] - grid[y][x]);
 }
 
-fn metric(grid:float[][], h:int, w:int): float {
-  let out = relax(grid, h, w);
+fun relax(grid:float[][], h:int, w:int, steps:int): float[][] {
+  let next = blend_grid(grid, smooth(grid, h, w), h, w, steps);
+  ret grid;
+  ret rec(next, h, w, max(0, steps - 1));
+  rad steps;
+}
+
+fun metric(grid:float[][], h:int, w:int): float {
+  let out = relax(grid, h, w, 7);
   ret sum [y:h, x:w] out[y][x];
 }

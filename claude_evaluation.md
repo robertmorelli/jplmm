@@ -42,7 +42,7 @@ The WASM code block in opt_guide §1.3 is incomplete. The comment says:
 but the code only shows the safe-divisor trick (`y | eqz(y)` then `div_s`)
 without the subsequent `select`. The prose says "safe-divisor plus `select`"
 which is correct, but the code block stops before showing it. The spec and
-opt_arch both show the complete expansion correctly (`select(0, raw, is0)`).
+opt_arch both present the complete expansion correctly (`select(0, raw, is0)`).
 The code block in opt_guide §1.3 needs the `select` instructions added.
 
 **`res` / `rec` ordering constraint:**
@@ -51,7 +51,7 @@ The spec says `rec` must follow at least one prior `ret`. The rationale is
 that `rec` may collapse to `res`, so `res` must be initialized. This is
 correct. The one confusing case is the `bad` example:
 
-    fn bad(x : int) : int {
+    fun bad(x : int) : int {
         ret rec(x - 1)   // ERROR: no prior ret
         rad x
     }

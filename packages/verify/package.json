@@ -3,11 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
   "dependencies": {
     "@jplmm/ast": "file:../ast",
-    "@jplmm/frontend": "file:../frontend"
+    "@jplmm/frontend": "file:../frontend",
+    "@jplmm/ir": "file:../ir",
+    "@jplmm/proof": "file:../proof"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

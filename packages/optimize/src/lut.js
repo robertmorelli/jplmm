@@ -12,10 +12,16 @@ export function tabulateLuts(program, artifacts, threshold) {
         if (cardinality.cardinality > threshold) {
             continue;
         }
-        if (fn.params.some((param) => param.type.tag !== "int") || fn.retType.tag === "void") {
+        if (fn.params.some((param) => param.type.tag !== "int") || (fn.retType.tag !== "int" && fn.retType.tag !== "float")) {
             continue;
         }
-        const table = enumerateArgs(cardinality, (args) => executeProgram(program, fn.name, args, { artifacts }).value);
+        const table = enumerateArgs(cardinality, (args) => {
+            const value = executeProgram(program, fn.name, args, { artifacts }).value;
+            if (typeof value !== "number") {
+                throw new Error(`LUT tabulation requires scalar results for '${fn.name}'`);
+            }
+            return value;
+        });
         out.push({
             fnName: fn.name,
             implementation: {

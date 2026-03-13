@@ -15,6 +15,7 @@ export function canonicalizeProgram(program) {
     const stats = { ...DEFAULT_STATS };
     const nextId = makeSyntheticIdFactory(program);
     const out = {
+        structs: program.structs,
         globals: program.globals.map((g) => canonicalizeGlobal(g, nextId, stats)),
         functions: program.functions.map((f) => canonicalizeFunction(f, nextId, stats)),
     };

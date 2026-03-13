@@ -1,5 +1,8 @@
 export const ACTIVE_KEYWORDS = new Set([
+    "fun",
     "fn",
+    "def",
+    "ref",
     "let",
     "ret",
     "res",
@@ -20,6 +23,7 @@ export const ACTIVE_KEYWORDS = new Set([
     "print",
     "show",
     "time",
+    "throwserror",
 ]);
 export const REMOVED_KEYWORDS = new Set([
     "if",

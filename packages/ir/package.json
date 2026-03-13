@@ -1,0 +1,17 @@
+{
+  "name": "@jplmm/ir",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@jplmm/ast": "file:../ast"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bash ../../tools/run-vitest.sh",
+    "lint": "echo \"No lint yet for ir\""
+  }
+}

@@ -1,0 +1,119 @@
+import type { Type } from "@jplmm/ast";
+import type { IRExpr, IRProgram } from "@jplmm/ir";
+export type Interval = {
+    lo: number;
+    hi: number;
+};
+export type ParameterRangeHints = Record<string, Interval[]>;
+export type CardinalityInfo = {
+    parameterRanges: Interval[];
+    cardinality: number | "inf";
+};
+export type ClosedFormImplementation = {
+    tag: "closed_form_linear_countdown";
+    paramIndex: number;
+    baseValue: number;
+    stepValue: number;
+    decrement: number;
+};
+export type LutImplementation = {
+    tag: "lut";
+    parameterRanges: Interval[];
+    table: number[];
+    resultType: Type;
+};
+export type AitkenImplementation = {
+    tag: "aitken_scalar_tail";
+    stateParamIndex: number;
+    afterIterations: number;
+    invariantParamIndices: number[];
+    targetParamIndex: number | null;
+};
+export type LinearSpeculationImplementation = {
+    tag: "linear_speculation";
+    varyingParamIndex: number;
+    fixedPoint: number;
+    stride: number;
+    direction: "up" | "down";
+    invariantParamIndices: number[];
+};
+export type FunctionImplementation = ClosedFormImplementation | LutImplementation | AitkenImplementation | LinearSpeculationImplementation;
+export type ResearchCandidate = {
+    pass: "aitken" | "linear_speculation";
+    reason: string;
+};
+export type OptimizeArtifacts = {
+    rangeMap: Map<number, Interval>;
+    cardinalityMap: Map<string, CardinalityInfo>;
+    implementations: Map<string, FunctionImplementation>;
+    researchCandidates: Map<string, ResearchCandidate[]>;
+};
+export type OptimizePassName = "canonicalize" | "range_analysis" | "guard_elimination" | "closed_form" | "lut_tabulation" | "aitken" | "linear_speculation";
+export type OptimizePassReport = {
+    name: OptimizePassName;
+    changed: boolean;
+    details: string[];
+    experimental?: boolean;
+};
+export type OptimizeOptions = {
+    parameterRangeHints?: ParameterRangeHints;
+    enableResearchPasses?: boolean;
+    lutThreshold?: number;
+};
+export type OptimizeResult = {
+    program: IRProgram;
+    artifacts: OptimizeArtifacts;
+    reports: OptimizePassReport[];
+};
+export type ExecuteOptions = {
+    artifacts?: OptimizeArtifacts;
+};
+export type ExecuteStats = {
+    exprEvaluations: number;
+    functionCalls: number;
+    recCalls: number;
+    recCollapses: number;
+    tailRecTransitions: number;
+    gasExhaustions: number;
+    iterations: number;
+    maxCallDepth: number;
+    implementationHits: Record<string, number>;
+};
+export type ExecuteResult = {
+    value: number;
+    stats: ExecuteStats;
+};
+export type EvaluateContext = {
+    program: IRProgram;
+    artifacts?: OptimizeArtifacts;
+};
+export type ClosedFormMatch = {
+    fnName: string;
+    implementation: ClosedFormImplementation;
+};
+export type AitkenMatch = {
+    fnName: string;
+    implementation: AitkenImplementation;
+};
+export type LinearSpeculationMatch = {
+    fnName: string;
+    implementation: LinearSpeculationImplementation;
+    candidate: ResearchCandidate;
+};
+export type TabulatedFunction = {
+    fnName: string;
+    implementation: LutImplementation;
+};
+export type GuardEliminationResult = {
+    program: IRProgram;
+    changed: boolean;
+    removedNanToZero: number;
+    removedTotalDiv: number;
+    removedTotalMod: number;
+};
+export type RangeAnalysisResult = {
+    rangeMap: Map<number, Interval>;
+    cardinalityMap: Map<string, CardinalityInfo>;
+};
+export type ExprMatcher = (expr: IRExpr) => boolean;
+//# sourceMappingURL=types.d.ts.map

@@ -1,0 +1,135 @@
+{
+  "generatedAt": "2026-03-12T21:10:05.825Z",
+  "availableTargets": [
+    "go"
+  ],
+  "targetProbes": [
+    {
+      "target": "go",
+      "available": true
+    },
+    {
+      "target": "cs",
+      "available": false,
+      "error": "Command failed: dafny build --target cs --no-verify --output /Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs /Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe.dfy\n\nDafny program verifier did not attempt verification\nFailed to compile C# source code using 'dotnet build /Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj -o /Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC'. Command output was:\nWelcome to .NET 8.0!\n---------------------\nSDK Version: 8.0.120\n\n----------------\nInstalled an ASP.NET Core HTTPS development certificate.\nTo trust the certificate, run 'dotnet dev-certs https --trust'\nLearn about HTTPS: https://aka.ms/dotnet-https\n\n----------------\nWrite your first app: https://aka.ms/dotnet-hello-world\nFind out what's new: https://aka.ms/dotnet-whats-new\nExplore documentation: https://aka.ms/dotnet-docs\nReport issues and find source on GitHub: https://github.com/dotnet/core\nUse 'dotnet --help' to see available commands or visit: https://aka.ms/dotnet-cli\n--------------------------------------------------------------------------------------\nMSBuild version 17.8.36+03e28d165 for .NET\n  Determining projects to restore...\n/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj : error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.\n/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj : error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error : Unable to load the service index for source https://api.nuget.org/v3/index.json. [/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj]\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error :   The type initializer for 'System.Net.CookieContainer' threw an exception. [/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj]\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error :   GetDomainName: -1 [/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj]\n\nBuild FAILED.\n\n/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj : error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.\n/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj : error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error : Unable to load the service index for source https://api.nuget.org/v3/index.json. [/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj]\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error :   The type initializer for 'System.Net.CookieContainer' threw an exception. [/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj]\n/opt/homebrew/Cellar/dotnet@8/8.0.120/libexec/sdk/8.0.120/NuGet.targets(156,5): error :   GetDomainName: -1 [/Users/robertmorelli/Documents/personal-repos/jplmm/.dafny-probe-cs-kRFulC/probe-cs.csproj]\n    0 Warning(s)\n    3 Error(s)\n\nTime Elapsed 00:00:16.99\nCSSM_ModuleLoad(): One or more parameters passed to a function were not valid."
+    }
+  ],
+  "results": [
+    {
+      "name": "closed_form_steps",
+      "jplImplementation": "closed_form_linear_countdown",
+      "expectedValue": 401,
+      "jplNativeArm64": {
+        "ms": 197.109,
+        "value": 401
+      },
+      "dafny": {
+        "file": "/Users/robertmorelli/Documents/personal-repos/jplmm/benchmarks/dafny/cases/closed_form_steps.dfy",
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "run": {
+              "ms": 5430.142834000002,
+              "stdout": "401",
+              "value": 401
+            }
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 5430.143,
+          "value": 401
+        }
+      },
+      "jplVsFastestDafnySpeedup": 27.549
+    },
+    {
+      "name": "lut_poly",
+      "jplImplementation": "lut",
+      "expectedValue": 226,
+      "jplNativeArm64": {
+        "ms": 215.079,
+        "value": 226
+      },
+      "dafny": {
+        "file": "/Users/robertmorelli/Documents/personal-repos/jplmm/benchmarks/dafny/cases/lut_poly.dfy",
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "run": {
+              "ms": 336.59754200000316,
+              "stdout": "226",
+              "value": 226
+            }
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 336.598,
+          "value": 226
+        }
+      },
+      "jplVsFastestDafnySpeedup": 1.565
+    },
+    {
+      "name": "linear_spec_zero",
+      "jplImplementation": "linear_speculation",
+      "expectedValue": 0,
+      "jplNativeArm64": {
+        "ms": 213.589,
+        "value": 0
+      },
+      "dafny": {
+        "file": "/Users/robertmorelli/Documents/personal-repos/jplmm/benchmarks/dafny/cases/linear_spec_zero.dfy",
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "run": {
+              "ms": 2970.398958000005,
+              "stdout": "0",
+              "value": 0
+            }
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 2970.399,
+          "value": 0
+        }
+      },
+      "jplVsFastestDafnySpeedup": 13.907
+    },
+    {
+      "name": "aitken_avg",
+      "jplImplementation": "aitken_scalar_tail",
+      "expectedValue": 100,
+      "jplNativeArm64": {
+        "ms": 201.757,
+        "value": 100
+      },
+      "dafny": {
+        "file": "/Users/robertmorelli/Documents/personal-repos/jplmm/benchmarks/dafny/cases/aitken_avg.dfy",
+        "attemptedTargets": [
+          {
+            "target": "go",
+            "ok": true,
+            "run": {
+              "ms": 6794.9934589999975,
+              "stdout": "99.99999999999999999457898913757247782996273599565029144287109375",
+              "value": 100
+            }
+          }
+        ],
+        "fastest": {
+          "target": "go",
+          "ms": 6794.993,
+          "value": 100
+        }
+      },
+      "jplVsFastestDafnySpeedup": 33.679
+    }
+  ]
+}

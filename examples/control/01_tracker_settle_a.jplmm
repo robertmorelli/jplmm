@@ -1,0 +1,21 @@
+struct Tracker { pos:float, vel:float, target:float, gain:float }
+
+fn step(state:Tracker): Tracker {
+  ret Tracker {
+    (state.pos * state.gain + state.target) / (state.gain + 1.0),
+    (state.vel + (state.target - state.pos) / 2.0) / 2.0,
+    state.target,
+    state.gain
+  };
+}
+
+fn iterate(state:Tracker): Tracker {
+  ret state;
+  ret rec(step(state));
+  gas 4;
+}
+
+fn score(state:Tracker): float {
+  let out = iterate(state);
+  ret out.pos + out.vel / 4.0;
+}

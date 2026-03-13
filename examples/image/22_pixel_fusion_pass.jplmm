@@ -1,0 +1,75 @@
+struct Pixel { r:int, g:int, b:int }
+
+fn clamp8(x:int): int {
+  ret clamp(x, 0, 255);
+}
+
+fn mk(r:int, g:int, b:int): Pixel {
+  ret Pixel { clamp8(r), clamp8(g), clamp8(b) };
+}
+
+fn sample(img:Pixel[][], h:int, w:int, y:int, x:int): Pixel {
+  ret img[clamp(y, 0, h - 1)][clamp(x, 0, w - 1)];
+}
+
+fn blur_px(img:Pixel[][], h:int, w:int, y:int, x:int): Pixel {
+  ret mk(
+    (sample(img, h, w, y - 1, x - 1).r + sample(img, h, w, y - 1, x).r + sample(img, h, w, y - 1, x + 1).r + sample(img, h, w, y, x - 1).r + sample(img, h, w, y, x).r + sample(img, h, w, y, x + 1).r + sample(img, h, w, y + 1, x - 1).r + sample(img, h, w, y + 1, x).r + sample(img, h, w, y + 1, x + 1).r) / 9,
+    (sample(img, h, w, y - 1, x - 1).g + sample(img, h, w, y - 1, x).g + sample(img, h, w, y - 1, x + 1).g + sample(img, h, w, y, x - 1).g + sample(img, h, w, y, x).g + sample(img, h, w, y, x + 1).g + sample(img, h, w, y + 1, x - 1).g + sample(img, h, w, y + 1, x).g + sample(img, h, w, y + 1, x + 1).g) / 9,
+    (sample(img, h, w, y - 1, x - 1).b + sample(img, h, w, y - 1, x).b + sample(img, h, w, y - 1, x + 1).b + sample(img, h, w, y, x - 1).b + sample(img, h, w, y, x).b + sample(img, h, w, y, x + 1).b + sample(img, h, w, y + 1, x - 1).b + sample(img, h, w, y + 1, x).b + sample(img, h, w, y + 1, x + 1).b) / 9
+  );
+}
+
+fn edge_x(img:Pixel[][], h:int, w:int, y:int, x:int): Pixel {
+  ret mk(
+    abs(sample(img, h, w, y, x + 1).r - sample(img, h, w, y, x - 1).r),
+    abs(sample(img, h, w, y, x + 1).g - sample(img, h, w, y, x - 1).g),
+    abs(sample(img, h, w, y, x + 1).b - sample(img, h, w, y, x - 1).b)
+  );
+}
+
+fn edge_y(img:Pixel[][], h:int, w:int, y:int, x:int): Pixel {
+  ret mk(
+    abs(sample(img, h, w, y + 1, x).r - sample(img, h, w, y - 1, x).r),
+    abs(sample(img, h, w, y + 1, x).g - sample(img, h, w, y - 1, x).g),
+    abs(sample(img, h, w, y + 1, x).b - sample(img, h, w, y - 1, x).b)
+  );
+}
+
+fn accent_px(img:Pixel[][], h:int, w:int, y:int, x:int): Pixel {
+  let base = sample(img, h, w, y, x);
+  let blur = blur_px(img, h, w, y, x);
+  let ex = edge_x(img, h, w, y, x);
+  let ey = edge_y(img, h, w, y, x);
+  ret mk(
+    base.r + ex.r / 3 + ey.r / 8 - blur.r / 4 + 79,
+    base.g + ex.g / 8 + ey.g / 3 - blur.g / 6 + 50,
+    base.b + ex.b / 6 + ey.b / 8 - blur.b / 4 + 25
+  );
+}
+
+fn stage_a(img:Pixel[][], h:int, w:int): Pixel[][] {
+  ret array [y:h, x:w] accent_px(img, h, w, y, x);
+}
+
+fn stage_b(img:Pixel[][], h:int, w:int): Pixel[][] {
+  ret array [y:h, x:w] mk(
+    (stage_a(img, h, w)[y][x].r + blur_px(img, h, w, y, x).r) / 2,
+    (stage_a(img, h, w)[y][x].g + edge_x(img, h, w, y, x).g) / 2,
+    (stage_a(img, h, w)[y][x].b + edge_y(img, h, w, y, x).b) / 2
+  );
+}
+
+fn pipeline(img:Pixel[][], h:int, w:int): Pixel[][] {
+  ret stage_b(img, h, w);
+}
+
+fn row_energy(img:Pixel[][], h:int, w:int): int[] {
+  let out = pipeline(img, h, w);
+  ret array [y:h] sum [x:w] (out[y][x].r + out[y][x].g + out[y][x].b) / 3;
+}
+
+fn column_energy(img:Pixel[][], h:int, w:int): int[] {
+  let out = pipeline(img, h, w);
+  ret array [x:w] sum [y:h] (out[y][x].r + out[y][x].g + out[y][x].b) / 3;
+}

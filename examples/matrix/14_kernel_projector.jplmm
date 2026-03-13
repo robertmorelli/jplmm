@@ -1,0 +1,41 @@
+fn dot_row(a:float[][], b:float[][], row:int, col:int, shared:int): float {
+  ret sum [k:shared] a[row][k] * b[k][col];
+}
+
+fn transpose(a:float[][], rows:int, cols:int): float[][] {
+  ret array [j:cols, i:rows] a[i][j];
+}
+
+fn matmul(a:float[][], b:float[][], rows:int, cols:int, shared:int): float[][] {
+  ret array [i:rows, j:cols] dot_row(a, b, i, j, shared);
+}
+
+fn laplace(a:float[][], rows:int, cols:int): float[][] {
+  ret array [i:rows, j:cols]
+    (a[clamp(i - 1, 0, rows - 1)][j] + a[clamp(i + 1, 0, rows - 1)][j] + a[i][clamp(j - 1, 0, cols - 1)] + a[i][clamp(j + 1, 0, cols - 1)] - a[i][j] * 4.0) / 3.0;
+}
+
+fn row_norm(a:float[][], row:int, cols:int): float {
+  ret sqrt(sum [k:cols] a[row][k] * a[row][k]);
+}
+
+fn normalize(a:float[][], rows:int, cols:int): float[][] {
+  ret array [i:rows, j:cols] a[i][j] / max(1.0, row_norm(a, i, cols));
+}
+
+fn enrich(a:float[][], rows:int, cols:int): float[][] {
+  let base = normalize(a, rows, cols);
+  let smooth = laplace(base, rows, cols);
+  ret array [i:rows, j:cols] base[i][j] + smooth[i][j] / 3.0;
+}
+
+fn pipeline(a:float[][], rows:int, cols:int): float[][] {
+  let t = transpose(enrich(a, rows, cols), rows, cols);
+  let g = matmul(t, a, cols, cols, rows);
+  ret normalize(g, cols, cols);
+}
+
+fn diagonal_energy(a:float[][], rows:int, cols:int): float {
+  let out = pipeline(a, rows, cols);
+  ret sum [i:min(rows, cols)] out[i][i] * out[i][i];
+}

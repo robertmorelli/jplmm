@@ -1,0 +1,85 @@
+{
+  "generatedAt": "2026-03-13T00:19:24.292Z",
+  "results": [
+    {
+      "name": "closed_form_steps",
+      "fnName": "steps",
+      "implementation": "closed_form_linear_countdown",
+      "value": "401",
+      "runtime": {
+        "baselineMs": 294.919,
+        "optimizedMs": 1.44,
+        "speedup": 204.805,
+        "baselineIterations": 3000,
+        "optimizedIterations": 3000
+      },
+      "nativeArm64": {
+        "baselineMs": 766.254,
+        "optimizedMs": 241.04,
+        "speedup": 3.179,
+        "baselineIterations": 200000,
+        "optimizedIterations": 200000
+      }
+    },
+    {
+      "name": "lut_poly",
+      "fnName": "poly",
+      "implementation": "lut",
+      "value": "226",
+      "runtime": {
+        "baselineMs": 2.684,
+        "optimizedMs": 1.873,
+        "speedup": 1.432,
+        "baselineIterations": 4000,
+        "optimizedIterations": 4000
+      },
+      "nativeArm64": {
+        "baselineMs": 248.511,
+        "optimizedMs": 231.737,
+        "speedup": 1.072,
+        "baselineIterations": 300000,
+        "optimizedIterations": 300000
+      }
+    },
+    {
+      "name": "linear_spec_zero",
+      "fnName": "zero",
+      "implementation": "linear_speculation",
+      "value": "0",
+      "runtime": {
+        "baselineMs": 191.741,
+        "optimizedMs": 2.522,
+        "speedup": 76.038,
+        "baselineIterations": 3000,
+        "optimizedIterations": 3000
+      },
+      "nativeArm64": {
+        "baselineMs": 332.408,
+        "optimizedMs": 244.829,
+        "speedup": 1.358,
+        "baselineIterations": 200000,
+        "optimizedIterations": 200000
+      }
+    },
+    {
+      "name": "aitken_avg",
+      "fnName": "avg",
+      "implementation": "aitken_scalar_tail",
+      "value": "100",
+      "runtime": {
+        "baselineMs": 41.315,
+        "optimizedMs": 8.697,
+        "speedup": 4.751,
+        "baselineIterations": 2000,
+        "optimizedIterations": 2000
+      },
+      "nativeArm64": {
+        "baselineMs": 264.894,
+        "optimizedMs": 232.236,
+        "speedup": 1.141,
+        "baselineIterations": 120000,
+        "optimizedIterations": 120000
+      }
+    }
+  ]
+}

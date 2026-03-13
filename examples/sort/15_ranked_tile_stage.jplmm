@@ -1,0 +1,37 @@
+struct Vec4 { a:int, b:int, c:int, d:int }
+
+fn pack4(a:int, b:int, c:int, d:int): Vec4 {
+  ret Vec4 { a, b, c, d };
+}
+
+fn stage4_a(v:Vec4): Vec4 {
+  ret pack4(min(v.a, v.b), max(v.a, v.b), min(v.c, v.d), max(v.c, v.d));
+}
+
+fn stage4_b(v:Vec4): Vec4 {
+  ret pack4(min(v.a, v.c), min(v.b, v.d), max(v.a, v.c), max(v.b, v.d));
+}
+
+fn stage4_c(v:Vec4): Vec4 {
+  ret pack4(v.a, min(v.b, v.c), max(v.b, v.c), v.d);
+}
+
+fn sort4(v:Vec4): Vec4 {
+  let a = stage4_a(v);
+  let b = stage4_b(a);
+  ret stage4_c(b);
+}
+
+fn sort_ranked_tile_stage(blocks:Vec4[], n:int): Vec4[] {
+  ret array [i:n] sort4(blocks[i]);
+}
+
+fn middle_ranked_tile_stage(blocks:Vec4[], n:int): int[] {
+  let out = sort_ranked_tile_stage(blocks, n);
+  ret array [i:n] (out[i].b + out[i].c) / 2;
+}
+
+fn checksum(blocks:Vec4[], n:int): int {
+  let mids = middle_ranked_tile_stage(blocks, n);
+  ret sum [i:n] mids[i];
+}

@@ -1,0 +1,15 @@
+fn smooth(grid:float[][], h:int, w:int): float[][] {
+  ret array [y:h, x:w]
+    (grid[y][x] + grid[clamp(y - 1, 0, h - 1)][x] + grid[clamp(y + 1, 0, h - 1)][x] + grid[y][clamp(x - 1, 0, w - 1)] + grid[y][clamp(x + 1, 0, w - 1)]) / 6.0;
+}
+
+fn relax(grid:float[][], h:int, w:int): float[][] {
+  ret grid;
+  ret rec(smooth(grid, h, w), h, w);
+  gas 3;
+}
+
+fn metric(grid:float[][], h:int, w:int): float {
+  let out = relax(grid, h, w);
+  ret sum [y:h, x:w] out[y][x];
+}

@@ -1,0 +1,27 @@
+{
+  "name": "jplmm",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@11.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "bench:research": "node_modules/vitest/vitest.mjs run -c vitest.research.config.ts",
+    "bench:dafny": "node_modules/vitest/vitest.mjs run -c vitest.dafny.config.ts",
+    "examples:regen": "node tools/generate_examples.mjs",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "turbo": "^2.1.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.5"
+  }
+}

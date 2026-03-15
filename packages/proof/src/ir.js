@@ -138,6 +138,43 @@ export function analyzeIrFunction(fn, structDefs = new Map(), symbolPrefix = "",
         callSigs: state.callSigs,
     };
 }
+export function analyzeIrGlobals(program, structDefs = new Map(program.structs.map((struct) => [struct.name, struct.fields])), symbolPrefix = "", options = {}) {
+    const callSigs = new Map();
+    const env = new Map();
+    const values = new Map();
+    const state = {
+        symbolPrefix,
+        env,
+        paramValues: new Map(),
+        exprSemantics: new Map(),
+        res: null,
+        stmtSemantics: [],
+        radSites: [],
+        recSites: [],
+        callSigs,
+        structDefs,
+        callSummaries: options.callSummaries ?? new Map(),
+    };
+    const syntheticFn = {
+        name: "<globals>",
+        keyword: "fun",
+        params: [],
+        retType: { tag: "void" },
+        body: [],
+        id: -1,
+    };
+    for (const global of program.globals) {
+        const value = symbolizeIrExpr(global.expr, syntheticFn, state, -1);
+        env.set(global.name, value);
+        values.set(global.name, value);
+        bindArrayExtentValues(env, value.kind === "array" ? value.array.arrayType : global.expr.resultType, value);
+    }
+    return {
+        values,
+        exprSemantics: state.exprSemantics,
+        callSigs: state.callSigs,
+    };
+}
 function bindArrayExtentValues(env, type, value) {
     const extentNames = getArrayExtentNames(type);
     if (!extentNames || value.kind !== "array") {
@@ -460,6 +497,7 @@ function symbolizeIrExprCore(expr, fn, state, stmtIndex) {
             const scalarArgs = args.every((arg) => arg.kind === "scalar")
                 ? args.map((arg) => arg.expr)
                 : null;
+            const flattenedArgs = scalarArgs ?? flattenCallArgs(args);
             if (tag && scalarArgs) {
                 const interpreted = isInterpretedCall(expr.name, scalarArgs.length);
                 if (!interpreted && !state.callSigs.has(expr.name)) {
@@ -470,8 +508,21 @@ function symbolizeIrExprCore(expr, fn, state, stmtIndex) {
                     expr: buildDenotationalScalarCallExpr(expr.name, scalarArgs, tag, interpreted),
                 };
             }
-            if (scalarArgs) {
-                return symbolizeAbstractValue(expr.resultType, `__call_${state.symbolPrefix}${expr.name}_${stmtIndex}_${expr.id}`, scalarArgs, state.callSigs, state.structDefs);
+            if (tag && flattenedArgs) {
+                state.callSigs.set(expr.name, { args: flattenedArgs.map((arg) => scalarExprType(arg)), ret: tag });
+                return {
+                    kind: "scalar",
+                    expr: {
+                        tag: "call",
+                        name: expr.name,
+                        args: flattenedArgs,
+                        valueType: tag,
+                        interpreted: false,
+                    },
+                };
+            }
+            if (flattenedArgs) {
+                return symbolizeAbstractValue(expr.resultType, expr.name, flattenedArgs, state.callSigs, state.structDefs);
             }
             return makeOpaque(expr.resultType, `call_${expr.name}_${stmtIndex}`, "ir:symbolizeIrExpr:call_non_scalar_args");
         }
@@ -563,6 +614,29 @@ function tryInlineCallSummary(expr, args, state) {
         }
     }
     return substituteValue(summary.analysis.result, substitution);
+}
+function flattenCallArgs(args) {
+    const out = [];
+    for (const arg of args) {
+        if (!flattenCallArg(arg, out)) {
+            return null;
+        }
+    }
+    return out;
+}
+function flattenCallArg(value, out) {
+    switch (value.kind) {
+        case "scalar":
+            out.push(value.expr);
+            return true;
+        case "struct":
+            return value.fields.every((field) => flattenCallArg(field.value, out));
+        case "void":
+            return true;
+        case "array":
+        case "opaque":
+            return false;
+    }
 }
 function symbolizeArrayExpr(expr, fn, state, stmtIndex) {
     if (expr.resultType.tag !== "array") {

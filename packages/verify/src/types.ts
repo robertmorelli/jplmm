@@ -37,6 +37,7 @@ export type VerificationFunctionTrace = {
   canonical: IRFunction;
   hasRec: boolean;
   paramValues: Map<string, SymValue>;
+  exprSemantics: Map<number, SymValue>;
   result: SymValue | null;
   stmtSemantics: IrStmtSemantics[];
   radSites: IrRadWitness[];

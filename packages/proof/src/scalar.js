@@ -1547,7 +1547,7 @@ export function substituteScalar(expr, substitution) {
             };
     }
 }
-export function buildMeasureCounterexampleQuery(params, currentMeasure, nextMeasure, substitution, callSigs, currentValues) {
+export function buildMeasureCounterexampleQuery(params, currentMeasure, nextMeasure, substitution, callSigs, currentValues, collapseCondition = null) {
     if (!canEncodeScalarExprWithSmt(currentMeasure) || !canEncodeScalarExprWithSmt(nextMeasure)) {
         return {
             ok: false,
@@ -1579,7 +1579,7 @@ export function buildMeasureCounterexampleQuery(params, currentMeasure, nextMeas
         }
         preconditionFailures.push(`could not encode non-collapse guard for '${param.name}'`);
     }
-    if (preconditions.length === 0) {
+    if (preconditions.length === 0 && !collapseCondition) {
         return {
             ok: false,
             reason: preconditionFailures[0]
@@ -1637,7 +1637,12 @@ export function buildMeasureCounterexampleQuery(params, currentMeasure, nextMeas
     lines.push(...nextDefinitions);
     lines.push(currentMeasureDef);
     lines.push(nextMeasureDef);
-    lines.push(`(assert (or ${preconditions.join(" ")}))`);
+    if (collapseCondition) {
+        lines.push(`(assert (not ${collapseCondition}))`);
+    }
+    else {
+        lines.push(`(assert (or ${preconditions.join(" ")}))`);
+    }
     lines.push(`(assert (not ${decrease}))`);
     return {
         ok: true,

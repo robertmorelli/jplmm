@@ -1875,6 +1875,7 @@ export function buildMeasureCounterexampleQuery(
   substitution: Map<string, SymValue>,
   callSigs: Map<string, { args: ScalarTag[]; ret: ScalarTag }>,
   currentValues: Map<string, SymValue>,
+  collapseCondition: string | null = null,
 ): CounterexampleQueryResult {
   if (!canEncodeScalarExprWithSmt(currentMeasure) || !canEncodeScalarExprWithSmt(nextMeasure)) {
     return {
@@ -1909,7 +1910,7 @@ export function buildMeasureCounterexampleQuery(
     preconditionFailures.push(`could not encode non-collapse guard for '${param.name}'`);
   }
 
-  if (preconditions.length === 0) {
+  if (preconditions.length === 0 && !collapseCondition) {
     return {
       ok: false,
       reason:
@@ -1982,7 +1983,11 @@ export function buildMeasureCounterexampleQuery(
   lines.push(...nextDefinitions);
   lines.push(currentMeasureDef);
   lines.push(nextMeasureDef);
-  lines.push(`(assert (or ${preconditions.join(" ")}))`);
+  if (collapseCondition) {
+    lines.push(`(assert (not ${collapseCondition}))`);
+  } else {
+    lines.push(`(assert (or ${preconditions.join(" ")}))`);
+  }
   lines.push(`(assert (not ${decrease}))`);
 
   return {

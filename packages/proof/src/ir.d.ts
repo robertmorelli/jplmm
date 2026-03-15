@@ -61,6 +61,14 @@ export type IrFunctionAnalysis = {
         ret: ScalarTag;
     }>;
 };
+export type IrGlobalAnalysis = {
+    values: Map<string, SymValue>;
+    exprSemantics: Map<number, SymValue>;
+    callSigs: Map<string, {
+        args: ScalarTag[];
+        ret: ScalarTag;
+    }>;
+};
 export type IrCallSummary = {
     fn: IRFunction;
     analysis: IrFunctionAnalysis;
@@ -73,6 +81,7 @@ export declare function buildCanonicalProgram(program: Program, typeMap: Map<num
 export declare function functionsAlphaEquivalent(left: IRFunction, right: IRFunction): boolean;
 export declare function hasRec(fn: IRFunction): boolean;
 export declare function analyzeIrFunction(fn: IRFunction, structDefs?: Map<string, IRStructDef["fields"]>, symbolPrefix?: string, options?: AnalyzeIrOptions): IrFunctionAnalysis;
+export declare function analyzeIrGlobals(program: Pick<IRProgram, "globals" | "structs">, structDefs?: Map<string, IRStructDef["fields"]>, symbolPrefix?: string, options?: AnalyzeIrOptions): IrGlobalAnalysis;
 export declare function buildIrCallSummaries(program: IRProgram, structDefs?: Map<string, IRStructDef["fields"]>, symbolPrefix?: string): Map<string, IrCallSummary>;
 export declare function proveIrSiteWithSmt(fn: IRFunction, rad: IrRadWitness, site: IrRecSite, analysis: IrFunctionAnalysis, solverOptions?: Z3RunOptions): IrSiteProof;
 export declare function checkIrStructuralDecrease(params: Param[], radExpr: IRExpr, recArgs: IRExpr[]): {

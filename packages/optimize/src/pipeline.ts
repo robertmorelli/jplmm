@@ -2,13 +2,21 @@ import type { IRProgram } from "@jplmm/ir";
 
 import { matchAitkenPass } from "./aitken";
 import { canonicalizeProgram } from "./canonicalize";
+import {
+  validateCanonicalizePassCertificate,
+  validateClosedFormPassCertificate,
+  validateGuardEliminationPassCertificate,
+  validateLutPassCertificate,
+} from "./certificates";
 import { matchClosedForms } from "./closed_form";
 import { eliminateGuards } from "./guard_elimination";
 import { matchLinearSpeculationPass } from "./linear_speculation";
 import { tabulateLuts } from "./lut";
+import { buildExprProvenance } from "./provenance";
 import { analyzeRanges } from "./range";
 import type {
   OptimizeArtifacts,
+  OptimizeCertificates,
   OptimizeOptions,
   OptimizePassReport,
   OptimizeResult,
@@ -17,10 +25,47 @@ import type {
 
 export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {}): OptimizeResult {
   const reports: OptimizePassReport[] = [];
-  const canonical = canonicalizeProgram(program);
+  const proofGate = options.proofGateCertificates === true;
+  const canonicalCandidate = canonicalizeProgram(program);
+  let canonical = canonicalCandidate;
+  const canonicalCertificate: OptimizeCertificates["canonicalize"] = {
+    passOrder: canonicalCandidate.passOrder,
+    stats: canonicalCandidate.stats,
+  };
+  const canonicalValidation = validateCanonicalizePassCertificate(
+    program,
+    canonicalCandidate.program,
+    canonicalCertificate,
+  );
+  if (proofGate && !canonicalValidation.ok) {
+    canonical = {
+      program,
+      passOrder: [],
+      stats: {
+        totalDivInserted: 0,
+        totalModInserted: 0,
+        nanToZeroInserted: 0,
+        satAddInserted: 0,
+        satSubInserted: 0,
+        satMulInserted: 0,
+        satNegInserted: 0,
+        zeroDivisorConstantFolded: 0,
+      },
+    };
+  }
   let current = canonical.program;
   const disabledPasses = new Set(options.disabledPasses ?? []);
   const fnByName = new Map(current.functions.map((fn) => [fn.name, fn] as const));
+  let closedFormsMatched: ReturnType<typeof matchClosedForms> = [];
+  let lutsMatched: ReturnType<typeof tabulateLuts> = [];
+  let guardCertificate: OptimizeCertificates["guardElimination"] = {
+    usedRangeExprIds: [],
+    removed: {
+      nanToZero: 0,
+      totalDiv: 0,
+      totalMod: 0,
+    },
+  };
 
   reports.push({
     name: "canonicalize",
@@ -30,6 +75,11 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
       `total_mod=${canonical.stats.totalModInserted}`,
       `nan_to_zero=${canonical.stats.nanToZeroInserted}`,
       `sat_int_ops=${canonical.stats.satAddInserted + canonical.stats.satSubInserted + canonical.stats.satMulInserted + canonical.stats.satNegInserted}`,
+      proofGate
+        ? canonicalValidation.ok
+          ? "proof_gate=accepted"
+          : `proof_gate=rejected: ${canonicalValidation.detail}`
+        : `certificate=${canonicalValidation.ok ? "ok" : `invalid: ${canonicalValidation.detail}`}`,
     ],
   });
 
@@ -52,8 +102,42 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
     usedRangeExprIds: [] as number[],
   };
   if (!disabledPasses.has("guard_elimination")) {
-    guardResult = eliminateGuards(current, rangeResult.rangeMap);
-    current = guardResult.program;
+    const guardCandidate = eliminateGuards(current, rangeResult.rangeMap);
+    const guardCandidateCertificate: OptimizeCertificates["guardElimination"] = {
+      usedRangeExprIds: [...guardCandidate.usedRangeExprIds],
+      removed: {
+        nanToZero: guardCandidate.removedNanToZero,
+        totalDiv: guardCandidate.removedTotalDiv,
+        totalMod: guardCandidate.removedTotalMod,
+      },
+    };
+    const guardValidation = validateGuardEliminationPassCertificate(
+      current,
+      guardCandidate.program,
+      guardCandidateCertificate,
+    );
+    if (proofGate && !guardValidation.ok) {
+      guardResult = {
+        program: current,
+        changed: false,
+        removedNanToZero: 0,
+        removedTotalDiv: 0,
+        removedTotalMod: 0,
+        usedRangeExprIds: [],
+      };
+      guardCertificate = {
+        usedRangeExprIds: [],
+        removed: {
+          nanToZero: 0,
+          totalDiv: 0,
+          totalMod: 0,
+        },
+      };
+    } else {
+      guardResult = guardCandidate;
+      guardCertificate = guardCandidateCertificate;
+      current = guardResult.program;
+    }
     reports.push({
       name: "guard_elimination",
       changed: guardResult.changed,
@@ -61,6 +145,11 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
         `removed_nan_to_zero=${guardResult.removedNanToZero}`,
         `removed_total_div=${guardResult.removedTotalDiv}`,
         `removed_total_mod=${guardResult.removedTotalMod}`,
+        proofGate
+          ? guardValidation.ok
+            ? "proof_gate=accepted"
+            : `proof_gate=rejected: ${guardValidation.detail}`
+          : `certificate=${guardValidation.ok ? "ok" : `invalid: ${guardValidation.detail}`}`,
       ],
     });
 
@@ -83,14 +172,33 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
   };
 
   if (!disabledPasses.has("closed_form")) {
-    const closedForms = matchClosedForms(current);
-    for (const match of closedForms) {
+    const closedFormCandidate = matchClosedForms(current);
+    const closedFormCertificate: OptimizeCertificates["closedForm"] = {
+      matches: closedFormCandidate.map((match) => ({
+        fnName: match.fnName,
+        implementation: match.implementation,
+        assumptions: [
+          `param ${match.implementation.paramIndex} is an int countdown with lower bound >= 0`,
+          `closed form is base ${match.implementation.baseValue} + step ${match.implementation.stepValue} * floor_div(param, ${match.implementation.decrement})`,
+        ],
+      })),
+    };
+    const closedFormValidation = validateClosedFormPassCertificate(current, closedFormCertificate);
+    closedFormsMatched = proofGate && !closedFormValidation.ok ? [] : closedFormCandidate;
+    for (const match of closedFormsMatched) {
       artifacts.implementations.set(match.fnName, match.implementation);
     }
     reports.push({
       name: "closed_form",
-      changed: closedForms.length > 0,
-      details: closedForms.map((match) => `${match.fnName}: ${match.implementation.tag}`),
+      changed: closedFormsMatched.length > 0,
+      details: [
+        ...closedFormsMatched.map((match) => `${match.fnName}: ${match.implementation.tag}`),
+        proofGate
+          ? closedFormValidation.ok
+            ? "proof_gate=accepted"
+            : `proof_gate=rejected: ${closedFormValidation.detail}`
+          : `certificate=${closedFormValidation.ok ? "ok" : `invalid: ${closedFormValidation.detail}`}`,
+      ],
     });
   } else {
     reports.push({
@@ -101,14 +209,31 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
   }
 
   if (!disabledPasses.has("lut_tabulation")) {
-    const luts = tabulateLuts(current, artifacts, options.lutThreshold ?? 256);
-    for (const lut of luts) {
+    const lutCandidate = tabulateLuts(current, artifacts, options.lutThreshold ?? 256);
+    const lutCertificate: OptimizeCertificates["lut"] = {
+      entries: lutCandidate.map((lut) => ({
+        fnName: lut.fnName,
+        parameterRanges: lut.implementation.parameterRanges,
+        tableLength: lut.implementation.table.length,
+        fallback: "final_optimized_ir" as const,
+      })),
+    };
+    const lutValidation = validateLutPassCertificate(lutCertificate);
+    lutsMatched = proofGate && !lutValidation.ok ? [] : lutCandidate;
+    for (const lut of lutsMatched) {
       artifacts.implementations.set(lut.fnName, lut.implementation);
     }
     reports.push({
       name: "lut_tabulation",
-      changed: luts.length > 0,
-      details: luts.map((lut) => `${lut.fnName}: ${lut.implementation.table.length} entries`),
+      changed: lutsMatched.length > 0,
+      details: [
+        ...lutsMatched.map((lut) => `${lut.fnName}: ${lut.implementation.table.length} entries`),
+        proofGate
+          ? lutValidation.ok
+            ? "proof_gate=accepted"
+            : `proof_gate=rejected: ${lutValidation.detail}`
+          : `certificate=${lutValidation.ok ? "ok" : `invalid: ${lutValidation.detail}`}`,
+      ],
     });
   } else {
     reports.push({
@@ -218,6 +343,42 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
       canonicalRanges: canonicalRangeResult,
       guardElided: guardResult,
       finalRanges: rangeResult,
+    },
+    certificates: {
+      canonicalize: {
+        passOrder: canonical.passOrder,
+        stats: canonical.stats,
+      },
+      rangeAnalysis: {
+        consumedExprIds: [...guardResult.usedRangeExprIds],
+      },
+      guardElimination: guardCertificate,
+      finalIdentity: {
+        reason: "final optimized IR reuses the guard-elided program; later optimization choices are emitted as implementation artifacts",
+      },
+      closedForm: {
+        matches: closedFormsMatched.map((match) => ({
+          fnName: match.fnName,
+          implementation: match.implementation,
+          assumptions: [
+            `param ${match.implementation.paramIndex} is an int countdown with lower bound >= 0`,
+            `closed form is base ${match.implementation.baseValue} + step ${match.implementation.stepValue} * floor_div(param, ${match.implementation.decrement})`,
+          ],
+        })),
+      },
+      lut: {
+        entries: lutsMatched.map((lut) => ({
+          fnName: lut.fnName,
+          parameterRanges: lut.implementation.parameterRanges,
+          tableLength: lut.implementation.table.length,
+          fallback: "final_optimized_ir" as const,
+        })),
+      },
+    },
+    provenance: {
+      rawToCanonical: buildExprProvenance(program, canonical.program),
+      canonicalToGuardElided: buildExprProvenance(canonical.program, guardResult.program),
+      guardElidedToFinalOptimized: buildExprProvenance(guardResult.program, current),
     },
   };
 }

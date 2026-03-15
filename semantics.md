@@ -49,14 +49,23 @@ ladder for non-backend compilation stages:
 
 - `raw_ir`
 - `canonical_ir`
+- `canonical_range_facts` for the canonical range facts guard elimination actually consumes
 - `guard_elided_ir`
 - `final_optimized_ir`
 - `closed_form_impl_ir` when a closed-form implementation is selected
 - `lut_impl_semantics` when a LUT implementation is selected
 
+Each IR floor now includes node-level semantic data, not just whole-function
+summaries:
+
+- every function body expression is serialized with its IR node id, rendered IR, and shared symbolic value semantics
+- top-level global expressions are serialized the same way
+- this is the same symbolic semantic layer used by the prover, not a second debug-only model
+
 The current verified adjacent-floor edges are:
 
 - `raw_ir -> canonical_ir`
+- `canonical_ir -> canonical_range_facts`
 - `canonical_ir -> guard_elided_ir`
 - `guard_elided_ir -> final_optimized_ir`
 
@@ -80,6 +89,41 @@ against `final_optimized_ir`, plus the explicit runtime fallback rule:
 Closed-form countdown selection is intentionally limited to explicitly
 nonnegative bounded countdown parameters like `int(0,_)`. The older unbounded
 match was not sound over all JPL-- integers.
+
+The `canonical_range_facts` edge is intentionally scoped:
+
+- it certifies the subset of canonical range facts that guard elimination actually consumed
+- the semantics JSON records the consumed expr ids plus owner function, rendered canonical expression, and interval
+- it does not yet claim that the entire canonical range map is globally proved
+
+Each adjacent-floor edge now also carries a pass-local certificate record in the
+machine-readable semantics JSON:
+
+- `raw_ir -> canonical_ir` includes the canonicalization pass order, emitted rewrite stats, and a validator that rechecks the derived operator-count deltas and target canonical form
+- `canonical_ir -> canonical_range_facts` records the exact consumed expr ids and validates that they are attached to canonical IR expressions
+- `canonical_ir -> guard_elided_ir` records the consumed fact ids plus removed guard counts and validates them against the structural diff
+- `guard_elided_ir -> final_optimized_ir` records the fact that the executable program is unchanged and later choices are artifact-level implementations
+- `final_optimized_ir -> closed_form_impl_ir` records the selected closed-form matcher instances and rechecks that the matcher rediscovers them
+- `final_optimized_ir -> lut_impl_semantics` records the LUT domain/table shape and validates that the table length matches the declared finite domain
+
+Those ladder schemas and validators are now shared proof-side code, not CLI-only
+logic:
+
+- the floor and edge builders live in [packages/proof/src/compiler_ladder.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder.ts)
+- the CLI consumes that shared ladder module instead of rebuilding compiler semantics on its own
+
+The optimizer also now has an opt-in proof-gated admission path for locally
+checkable pass certificates:
+
+- [packages/optimize/src/certificates.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/optimize/src/certificates.ts) exports independent validators for canonicalization, guard elimination, closed form, LUT, and consumed range-fact certificates
+- [packages/optimize/src/pipeline.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/optimize/src/pipeline.ts) can be asked to keep the previous floor when one of those local certificate checks fails instead of blindly admitting the pass result
+- today that path is opt-in via `proofGateCertificates`; the default optimizer behavior is unchanged
+
+The ladder now also records lightweight expr ancestry between adjacent IR floors:
+
+- each optimize result carries provenance maps from lower-floor expr ids back to the upper-floor expr ids they came from
+- the semantics JSON serializes those provenance maps for `raw -> canonical`, `canonical -> guard_elided`, and `guard_elided -> final_optimized`
+- this is intentionally a simple ancestry map, not yet a full rewrite proof
 
 ## 2. Canonical IR Is The Main Proof Boundary
 
@@ -169,6 +213,7 @@ This is the main "arrays are functions" move, and it is the active semantic form
 Important current limit:
 
 - eligible non-recursive helper calls can now be beta-reduced even when they take array/struct arguments
+- helper calls that cannot be beta-reduced but whose arguments flatten to scalar leaves, like recursive struct helpers used through field projection, now stay as shared abstract calls instead of going opaque
 - if a helper cannot stay inside the shared symbolic encoding, it still falls back to an opaque symbolic value
 - recursive/general interprocedural array reasoning is still a real remaining gap
 

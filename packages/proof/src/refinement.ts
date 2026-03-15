@@ -405,7 +405,7 @@ function proveSharedRecursiveMeasureDecreases(
   ];
 
   for (const entry of sites) {
-    const query = buildRecursiveMeasureQuery(entry.summary, entry.site, measure);
+    const query = buildRecursiveMeasureQuery(entry.summary, entry.site, measure, solverOptions);
     if (!query.ok) {
       return {
         ok: false,
@@ -445,6 +445,7 @@ function buildRecursiveMeasureQuery(
   summary: SymbolicFunctionSummary,
   site: IrRecSite,
   measure: ScalarExpr,
+  solverOptions: Z3RunOptions,
 ): ReturnType<typeof buildMeasureCounterexampleQuery> {
   if (site.issues.length > 0) {
     return {
@@ -471,6 +472,13 @@ function buildRecursiveMeasureQuery(
   }
 
   const nextMeasure = substituteSharedScalar(measure, substitution);
+  const collapse = chooseRecursiveCollapseFormula(summary, site, solverOptions);
+  if (!collapse.ok) {
+    return {
+      ok: false,
+      reason: collapse.reason,
+    };
+  }
   return buildMeasureCounterexampleQuery(
     summary.fn.params,
     measure,
@@ -478,6 +486,7 @@ function buildRecursiveMeasureQuery(
     substitution,
     summary.analysis.callSigs,
     summary.analysis.paramValues,
+    collapse.formula,
   );
 }
 
@@ -537,7 +546,7 @@ function proveRecursiveStepEquivalence(
     lines.push(`(declare-fun ${sanitize(name)} (${domain}) ${sort})`);
   }
 
-  const overridesResult = buildRecursiveEmitOverrides([baseline, refined], hypotheses, smtOverrides);
+  const overridesResult = buildRecursiveEmitOverrides([baseline, refined], hypotheses, solverOptions, smtOverrides);
   if (!overridesResult.ok) {
     return {
       ok: false,
@@ -641,6 +650,163 @@ function emitRecursiveCollapse(summary: SymbolicFunctionSummary, site: IrRecSite
   return clauses.length === 1 ? clauses[0]! : `(and ${clauses.join(" ")})`;
 }
 
+function emitRecursiveScalarCollapse(
+  summary: SymbolicFunctionSummary,
+  site: IrRecSite,
+  overrides: EmitOverrides = {},
+): string | null {
+  const clauses: string[] = [];
+  for (let i = 0; i < summary.fn.params.length; i += 1) {
+    const param = summary.fn.params[i]!;
+    if (param.type.tag !== "int" && param.type.tag !== "float") {
+      continue;
+    }
+    const current = summary.analysis.paramValues.get(param.name);
+    const next = site.argValues.get(i);
+    if (!current || !next || current.kind !== "scalar" || next.kind !== "scalar") {
+      return null;
+    }
+    const equality = emitScalarCollapseClause(param.name, current.expr, next.expr, overrides)
+      ?? emitValueEquality(current, next, param.type, overrides);
+    if (!equality) {
+      return null;
+    }
+    if (equality !== "true") {
+      clauses.push(equality);
+    }
+  }
+  if (clauses.length === 0) {
+    return "true";
+  }
+  return clauses.length === 1 ? clauses[0]! : `(and ${clauses.join(" ")})`;
+}
+
+function emitScalarCollapseClause(
+  paramName: string,
+  current: ScalarExpr,
+  next: ScalarExpr,
+  overrides: EmitOverrides,
+): string | null {
+  if (current.tag === "var" && current.name === paramName && next.tag === "var" && next.name === paramName) {
+    return "true";
+  }
+  if (current.tag === "var" && current.name === paramName && current.valueType === "int") {
+    const countdown = matchZeroCountdownCollapse(next, paramName);
+    if (countdown) {
+      return `(= ${sanitize(paramName)} 0)`;
+    }
+  }
+  return `(= ${emitScalarWithOverrides(current, overrides)} ${emitScalarWithOverrides(next, overrides)})`;
+}
+
+function matchZeroCountdownCollapse(expr: ScalarExpr, paramName: string): boolean {
+  if (expr.tag !== "call" || !expr.interpreted || expr.name !== "max" || expr.args.length !== 2) {
+    return false;
+  }
+  const zeroArg = expr.args.find((arg) => arg.tag === "int_lit" && arg.value === 0) ?? null;
+  const otherArg = expr.args.find((arg) => !(arg.tag === "int_lit" && arg.value === 0)) ?? null;
+  if (!zeroArg || !otherArg) {
+    return false;
+  }
+  return isStrictPositiveIntDecrement(otherArg, paramName);
+}
+
+function isStrictPositiveIntDecrement(expr: ScalarExpr, paramName: string): boolean {
+  if (expr.tag === "sat_sub" || (expr.tag === "binop" && expr.op === "-")) {
+    return expr.left.tag === "var"
+      && expr.left.name === paramName
+      && expr.right.tag === "int_lit"
+      && expr.right.value > 0;
+  }
+  return false;
+}
+
+function chooseRecursiveCollapseFormula(
+  summary: SymbolicFunctionSummary,
+  site: IrRecSite,
+  solverOptions: Z3RunOptions,
+  seedOverrides: EmitOverrides = {},
+): { ok: true; formula: string } | { ok: false; reason: string } {
+  const fullCollapse = emitRecursiveCollapse(summary, site, seedOverrides);
+  if (!fullCollapse) {
+    return {
+      ok: false,
+      reason: `could not encode recursive collapse test for site ${site.stmtIndex + 1}`,
+    };
+  }
+  const scalarCollapse = emitRecursiveScalarCollapse(summary, site, seedOverrides);
+  if (!scalarCollapse || scalarCollapse === fullCollapse) {
+    return { ok: true, formula: fullCollapse };
+  }
+  const sufficient = proveCollapseImplication(summary, site, scalarCollapse, fullCollapse, solverOptions);
+  if (!sufficient.ok) {
+    return {
+      ok: false,
+      reason: sufficient.reason,
+    };
+  }
+  return { ok: true, formula: sufficient.holds ? scalarCollapse : fullCollapse };
+}
+
+function proveCollapseImplication(
+  summary: SymbolicFunctionSummary,
+  site: IrRecSite,
+  premise: string,
+  conclusion: string,
+  solverOptions: Z3RunOptions,
+): { ok: true; holds: boolean } | { ok: false; reason: string } {
+  const lines = buildJplScalarPrelude();
+  for (const [name, sig] of summary.analysis.callSigs) {
+    const domain = sig.args.map((arg) => (arg === "int" ? "Int" : "Real")).join(" ");
+    const sort = sig.ret === "int" ? "Int" : "Real";
+    lines.push(`(declare-fun ${sanitize(name)} (${domain}) ${sort})`);
+  }
+
+  const vars = new Map<string, "int" | "float">();
+  for (const value of summary.analysis.paramValues.values()) {
+    collectValueVars(value, vars);
+  }
+  for (const value of site.argValues.values()) {
+    collectValueVars(value, vars);
+  }
+
+  for (const [name, tag] of vars) {
+    lines.push(`(declare-const ${sanitize(name)} ${tag === "int" ? "Int" : "Real"})`);
+    const paramType = summary.fn.params.find((param) => param.name === name)?.type;
+    if (paramType) {
+      appendScalarTypeConstraints(lines, name, paramType);
+    } else if (tag === "int") {
+      lines.push(`(assert (<= ${INT32_MIN} ${sanitize(name)}))`);
+      lines.push(`(assert (<= ${sanitize(name)} ${INT32_MAX}))`);
+      if (name.startsWith("jplmm_dim_")) {
+        lines.push(`(assert (<= 1 ${sanitize(name)}))`);
+      }
+    }
+  }
+
+  lines.push(`(assert ${premise})`);
+  lines.push(`(assert (not ${conclusion}))`);
+  const result = checkSat(lines, solverOptions);
+  if (!result.ok) {
+    return {
+      ok: false,
+      reason: result.timedOut
+        ? `timed out while checking conditional collapse for site ${site.stmtIndex + 1}: ${result.error}`
+        : `could not invoke z3 while checking conditional collapse for site ${site.stmtIndex + 1}: ${result.error}`,
+    };
+  }
+  if (result.status === "unsat") {
+    return { ok: true, holds: true };
+  }
+  if (result.status === "sat") {
+    return { ok: true, holds: false };
+  }
+  return {
+    ok: false,
+    reason: `z3 returned '${result.output || "unknown"}' while checking conditional collapse for site ${site.stmtIndex + 1}`,
+  };
+}
+
 function uniqueScalarMeasures(exprs: ScalarExpr[]): ScalarExpr[] {
   const out: ScalarExpr[] = [];
   const seen = new Set<string>();
@@ -659,6 +825,7 @@ type CallOverrideHandler = (expr: Extract<ScalarExpr, { tag: "call" }>, override
 function buildRecursiveEmitOverrides(
   summaries: SymbolicFunctionSummary[],
   hypotheses: Map<IrRecSite, SymValue>,
+  solverOptions: Z3RunOptions,
   seedOverrides: EmitOverrides = {},
 ): { ok: true; overrides: EmitOverrides } | { ok: false; reason: string } {
   const handlers = new Map<string, CallOverrideHandler>();
@@ -675,11 +842,11 @@ function buildRecursiveEmitOverrides(
       if (!hypothesis) {
         return { ok: false, reason: `missing recursive hypothesis for site ${site.stmtIndex + 1}` };
       }
-      const collapse = emitRecursiveCollapse(summary, site, seedOverrides);
-      if (!collapse) {
-        return { ok: false, reason: `could not encode recursive collapse test for site ${site.stmtIndex + 1}` };
+      const collapse = chooseRecursiveCollapseFormula(summary, site, solverOptions, seedOverrides);
+      if (!collapse.ok) {
+        return { ok: false, reason: collapse.reason };
       }
-      const problem = registerRecursiveValueBindings(site.resultValue, site.currentRes, hypothesis, collapse, handlers);
+      const problem = registerRecursiveValueBindings(site.resultValue, site.currentRes, hypothesis, collapse.formula, handlers);
       if (problem) {
         return { ok: false, reason: problem };
       }

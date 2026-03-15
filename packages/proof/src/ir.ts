@@ -115,6 +115,12 @@ export type IrFunctionAnalysis = {
   callSigs: Map<string, { args: ScalarTag[]; ret: ScalarTag }>;
 };
 
+export type IrGlobalAnalysis = {
+  values: Map<string, SymValue>;
+  exprSemantics: Map<number, SymValue>;
+  callSigs: Map<string, { args: ScalarTag[]; ret: ScalarTag }>;
+};
+
 export type IrCallSummary = {
   fn: IRFunction;
   analysis: IrFunctionAnalysis;
@@ -276,6 +282,51 @@ export function analyzeIrFunction(
     stmtSemantics: state.stmtSemantics,
     radSites: state.radSites,
     recSites: state.recSites,
+    callSigs: state.callSigs,
+  };
+}
+
+export function analyzeIrGlobals(
+  program: Pick<IRProgram, "globals" | "structs">,
+  structDefs: Map<string, IRStructDef["fields"]> = new Map(program.structs.map((struct) => [struct.name, struct.fields] as const)),
+  symbolPrefix = "",
+  options: AnalyzeIrOptions = {},
+): IrGlobalAnalysis {
+  const callSigs = new Map<string, { args: ScalarTag[]; ret: ScalarTag }>();
+  const env = new Map<string, SymValue>();
+  const values = new Map<string, SymValue>();
+  const state: AnalysisState = {
+    symbolPrefix,
+    env,
+    paramValues: new Map(),
+    exprSemantics: new Map(),
+    res: null,
+    stmtSemantics: [],
+    radSites: [],
+    recSites: [],
+    callSigs,
+    structDefs,
+    callSummaries: options.callSummaries ?? new Map(),
+  };
+  const syntheticFn: IRFunction = {
+    name: "<globals>",
+    keyword: "fun",
+    params: [],
+    retType: { tag: "void" },
+    body: [],
+    id: -1,
+  };
+
+  for (const global of program.globals) {
+    const value = symbolizeIrExpr(global.expr, syntheticFn, state, -1);
+    env.set(global.name, value);
+    values.set(global.name, value);
+    bindArrayExtentValues(env, value.kind === "array" ? value.array.arrayType : global.expr.resultType, value);
+  }
+
+  return {
+    values,
+    exprSemantics: state.exprSemantics,
     callSigs: state.callSigs,
   };
 }
@@ -701,6 +752,7 @@ function symbolizeIrExprCore(
       const scalarArgs = args.every((arg) => arg.kind === "scalar")
         ? args.map((arg) => (arg as Extract<SymValue, { kind: "scalar" }>).expr)
         : null;
+      const flattenedArgs = scalarArgs ?? flattenCallArgs(args);
       if (tag && scalarArgs) {
         const interpreted = isInterpretedCall(expr.name, scalarArgs.length);
         if (!interpreted && !state.callSigs.has(expr.name)) {
@@ -711,11 +763,24 @@ function symbolizeIrExprCore(
           expr: buildDenotationalScalarCallExpr(expr.name, scalarArgs, tag, interpreted),
         };
       }
-      if (scalarArgs) {
+      if (tag && flattenedArgs) {
+        state.callSigs.set(expr.name, { args: flattenedArgs.map((arg) => scalarExprType(arg)), ret: tag });
+        return {
+          kind: "scalar",
+          expr: {
+            tag: "call",
+            name: expr.name,
+            args: flattenedArgs,
+            valueType: tag,
+            interpreted: false,
+          },
+        };
+      }
+      if (flattenedArgs) {
         return symbolizeAbstractValue(
           expr.resultType,
-          `__call_${state.symbolPrefix}${expr.name}_${stmtIndex}_${expr.id}`,
-          scalarArgs,
+          expr.name,
+          flattenedArgs,
           state.callSigs,
           state.structDefs,
         );
@@ -824,6 +889,31 @@ function tryInlineCallSummary(
   }
 
   return substituteValue(summary.analysis.result, substitution);
+}
+
+function flattenCallArgs(args: SymValue[]): ScalarExpr[] | null {
+  const out: ScalarExpr[] = [];
+  for (const arg of args) {
+    if (!flattenCallArg(arg, out)) {
+      return null;
+    }
+  }
+  return out;
+}
+
+function flattenCallArg(value: SymValue, out: ScalarExpr[]): boolean {
+  switch (value.kind) {
+    case "scalar":
+      out.push(value.expr);
+      return true;
+    case "struct":
+      return value.fields.every((field) => flattenCallArg(field.value, out));
+    case "void":
+      return true;
+    case "array":
+    case "opaque":
+      return false;
+  }
 }
 
 function symbolizeArrayExpr(

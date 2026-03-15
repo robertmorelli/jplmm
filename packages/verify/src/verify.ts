@@ -43,6 +43,7 @@ export function verifyProgram(
       canonical: fn,
       hasRec: hasRec(fn),
       paramValues: analysis.paramValues,
+      exprSemantics: analysis.exprSemantics,
       result: analysis.result,
       stmtSemantics: analysis.stmtSemantics,
       radSites: analysis.radSites,
@@ -102,6 +103,7 @@ function verifyFunction(
   const analysis = trace
     ? {
         paramValues: trace.paramValues,
+        exprSemantics: trace.exprSemantics,
         result: trace.result,
         stmtSemantics: trace.stmtSemantics,
         radSites: trace.radSites,

@@ -5,7 +5,13 @@ import type { Type } from "@jplmm/ast";
 import { buildIR } from "@jplmm/ir";
 import { runFrontend } from "@jplmm/frontend";
 
-import { canonicalizeProgram, isNaNlessCanonical, optimizeProgram, packageName } from "../src/index.ts";
+import {
+  canonicalizeProgram,
+  isNaNlessCanonical,
+  optimizeProgram,
+  packageName,
+  validateOptimizeCertificates,
+} from "../src/index.ts";
 
 const INT_T: Type = { tag: "int" };
 const FLOAT_T: Type = { tag: "float" };
@@ -249,5 +255,41 @@ describe("@jplmm/optimize", () => {
     const guardReport = result.reports.find((report) => report.name === "guard_elimination");
     expect(guardReport?.changed).toBe(true);
     expect(guardReport?.details.some((detail) => detail.includes("removed_nan_to_zero=1"))).toBe(true);
+  });
+
+  it("exports independently checkable pass certificates", () => {
+    const program = compile(`
+      fn steps(x:int(0,_)): int {
+        ret 0;
+        ret rec(max(0, x - 1)) + 1;
+        rad x;
+      }
+    `);
+    const result = optimizeProgram(program);
+    const checks = validateOptimizeCertificates(result);
+
+    expect(checks.canonicalize.ok).toBe(true);
+    expect(checks.rangeAnalysis.ok).toBe(true);
+    expect(checks.guardElimination.ok).toBe(true);
+    expect(checks.finalIdentity.ok).toBe(true);
+    expect(checks.closedForm.ok).toBe(true);
+    expect(checks.lut.ok).toBe(true);
+  });
+
+  it("can proof-gate locally checkable optimization certificates", () => {
+    const program = compile(`
+      fn steps(x:int(0,_)): int {
+        ret 0;
+        ret rec(max(0, x - 1)) + 1;
+        rad x;
+      }
+    `);
+    const result = optimizeProgram(program, { proofGateCertificates: true });
+
+    expect(result.artifacts.implementations.get("steps")?.tag).toBe("closed_form_linear_countdown");
+    expect(result.reports.find((report) => report.name === "canonicalize")?.details).toContain("proof_gate=accepted");
+    expect(result.reports.find((report) => report.name === "guard_elimination")?.details).toContain("proof_gate=accepted");
+    expect(result.reports.find((report) => report.name === "closed_form")?.details).toContain("proof_gate=accepted");
+    expect(result.reports.find((report) => report.name === "lut_tabulation")?.details).toContain("proof_gate=accepted");
   });
 });

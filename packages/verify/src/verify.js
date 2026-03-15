@@ -19,6 +19,7 @@ export function verifyProgram(program, typeMap, options = {}) {
             canonical: fn,
             hasRec: hasRec(fn),
             paramValues: analysis.paramValues,
+            exprSemantics: analysis.exprSemantics,
             result: analysis.result,
             stmtSemantics: analysis.stmtSemantics,
             radSites: analysis.radSites,
@@ -67,6 +68,7 @@ function verifyFunction(fnName, fn, trace, diagnostics, solverOptions) {
     const analysis = trace
         ? {
             paramValues: trace.paramValues,
+            exprSemantics: trace.exprSemantics,
             result: trace.result,
             stmtSemantics: trace.stmtSemantics,
             radSites: trace.radSites,

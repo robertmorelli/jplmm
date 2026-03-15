@@ -241,7 +241,7 @@ export declare function substituteScalar(expr: ScalarExpr, substitution: Map<str
 export declare function buildMeasureCounterexampleQuery(params: Param[], currentMeasure: ScalarExpr, nextMeasure: ScalarExpr, substitution: Map<string, SymValue>, callSigs: Map<string, {
     args: ScalarTag[];
     ret: ScalarTag;
-}>, currentValues: Map<string, SymValue>): CounterexampleQueryResult;
+}>, currentValues: Map<string, SymValue>, collapseCondition?: string | null): CounterexampleQueryResult;
 export declare function symbolizeCurrentParamValue(param: Param): SymValue;
 export declare function emitValueChange(current: SymValue, next: SymValue, type: Type, overrides?: EmitOverrides): string | null;
 export declare function emitValueEquality(current: SymValue, next: SymValue, type: Type, overrides?: EmitOverrides): string | null;

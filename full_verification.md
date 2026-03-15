@@ -61,18 +61,50 @@ Current machine-readable ladder status:
 
 - `raw_ir`
 - `canonical_ir`
+- `canonical_range_facts` for the canonical facts guard elimination actually consumes
 - `guard_elided_ir`
 - `final_optimized_ir`
 - `closed_form_impl_ir` when a verified closed-form implementation is selected
 - `lut_impl_semantics` when a verified LUT implementation is selected
 
+For the IR floors already exposed today, the semantics JSON now includes
+per-expression semantic records:
+
+- every function-body IR expression at each floor
+- every top-level global IR expression at each floor
+- each record includes node id, rendered IR, and the shared symbolic semantics used by the proof engine
+
 Current verified edges in semantics mode:
 
 - `raw_ir -> canonical_ir`
+- `canonical_ir -> canonical_range_facts`
 - `canonical_ir -> guard_elided_ir`
 - `guard_elided_ir -> final_optimized_ir`
 - `final_optimized_ir -> closed_form_impl_ir` via the closed-form countdown matcher when that pass applies
 - `final_optimized_ir -> lut_impl_semantics` via exact finite-domain table re-enumeration, with explicit fallback to `final_optimized_ir` outside the LUT domain
+
+Each of those edges should carry a pass-local certificate record that can be
+checked independently of the pass report:
+
+- canonicalization: pass order plus rewrite stats, together with a validator that rechecks the derived operator-count deltas and resulting canonical form
+- range analysis consumption: the exact consumed expr ids and a validator that they are attached to canonical IR expressions
+- guard elimination: consumed fact ids plus removed guard counts, together with a validator against the structural diff
+- identity / no-op edges: an explicit certificate that the executable program was unchanged and later choices are artifact-level implementations
+- closed form: matcher instances plus their assumptions, together with a validator that the matcher rediscovers them
+- LUT: declared finite domain plus table shape, together with a validator that the table length matches the domain cardinality
+
+Current architecture update:
+
+- compiler-floor schemas and edge validators are now shared proof-side code in [packages/proof/src/compiler_ladder.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder.ts), not reconstructed only in the CLI
+- the optimizer now exposes independent local certificate validators in [packages/optimize/src/certificates.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/optimize/src/certificates.ts)
+- the optimize pipeline has an opt-in proof-gated mode (`proofGateCertificates`) that can preserve the previous floor when a locally checkable certificate fails
+- optimize results also now carry expr-level provenance maps between adjacent IR floors, and semantics mode serializes those ancestry maps
+
+Important current scope note:
+
+- `canonical_range_facts` is the guard-consumed subset of the canonical range map, not the full range analysis output
+- the semantics dump records the consumed expr ids together with owner function, rendered canonical expression, and interval
+- the edge proves those consumed facts are sound enough to justify guard elimination
 
 The initial full-verification target should cover the non-research path:
 
@@ -88,6 +120,11 @@ One important correction from the live codebase:
 
 - closed-form countdown lowering is now intentionally restricted to explicitly nonnegative bounded countdown parameters like `int(0,_)`
 - the older unbounded form was not sound over all JPL-- integers, and the new semantics ladder exposed that
+
+Another correction from the live examples:
+
+- recursive array-collapse examples such as `grid_relax_*` need the array extents to be part of the signature, e.g. `grid:float[h][w]`
+- without that, the collapse proof is underconstrained because the verifier cannot assume the explicit `h` / `w` parameters equal the runtime dimensions of `grid`
 
 The research passes can be added later:
 

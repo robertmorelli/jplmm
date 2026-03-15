@@ -1,22 +1,22 @@
-fun smooth(grid:float[][], h:int, w:int): float[][] {
+fun smooth(grid:float[h][w]): float[][] {
   ret array [y:h, x:w]
     (grid[y][x] + grid[clamp(y - 1, 0, h - 1)][x] + grid[clamp(y + 1, 0, h - 1)][x] + grid[y][clamp(x - 1, 0, w - 1)] + grid[y][clamp(x + 1, 0, w - 1)]) / 4.0;
 }
 
-fun blend_grid(grid:float[][], next:float[][], h:int, w:int, steps:int): float[][] {
+fun blend_grid(grid:float[h][w], next:float[][], steps:int): float[][] {
   let gate = to_float(min(1, max(0, steps)));
   ret array [y:h, x:w] grid[y][x] + gate * (next[y][x] - grid[y][x]);
 }
 
-fun relax(grid:float[][], h:int, w:int, steps:int): float[][] {
-  let next = blend_grid(grid, smooth(grid, h, w), h, w, steps);
+fun relax(grid:float[h][w], steps:int): float[][] {
+  let next = blend_grid(grid, smooth(grid), steps);
   ret grid;
-  ret rec(next, h, w, max(0, steps - 1));
+  ret rec(next, max(0, steps - 1));
   rad steps;
 }
 
-fun metric(grid:float[][], h:int, w:int): float {
-  let out = relax(grid, h, w, 4);
+fun metric(grid:float[h][w]): float {
+  let out = relax(grid, 4);
   ret sum [y:h, x:w] out[y][x];
 }
 
@@ -25,5 +25,5 @@ fun main(): float {
   let h = 4;
   let w = 5;
   let grid = array [y:h, x:w] to_float((y + 1) * (x + 2));
-  ret metric(grid, h, w);
+  ret metric(grid);
 }

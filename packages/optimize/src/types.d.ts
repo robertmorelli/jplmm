@@ -63,6 +63,7 @@ export type OptimizeOptions = {
     enableResearchPasses?: boolean;
     lutThreshold?: number;
     disabledPasses?: DisableablePassName[];
+    proofGateCertificates?: boolean;
 };
 export type DisableablePassName = "guard_elimination" | "closed_form" | "lut_tabulation" | "aitken" | "linear_speculation";
 export type OptimizeResult = {
@@ -70,6 +71,46 @@ export type OptimizeResult = {
     artifacts: OptimizeArtifacts;
     reports: OptimizePassReport[];
     stages: OptimizeStages;
+    certificates: OptimizeCertificates;
+    provenance: OptimizeProvenance;
+};
+export type OptimizeCertificates = {
+    canonicalize: {
+        passOrder: CanonicalizeResult["passOrder"];
+        stats: CanonicalizeResult["stats"];
+    };
+    rangeAnalysis: {
+        consumedExprIds: number[];
+    };
+    guardElimination: {
+        usedRangeExprIds: number[];
+        removed: {
+            nanToZero: number;
+            totalDiv: number;
+            totalMod: number;
+        };
+    };
+    finalIdentity: {
+        reason: string;
+    };
+    closedForm: {
+        matches: Array<{
+            fnName: string;
+            implementation: ClosedFormImplementation;
+            assumptions: string[];
+        }>;
+    };
+    lut: {
+        entries: Array<{
+            fnName: string;
+            parameterRanges: Array<{
+                lo: number;
+                hi: number;
+            }>;
+            tableLength: number;
+            fallback: "final_optimized_ir";
+        }>;
+    };
 };
 export type OptimizeStages = {
     rawProgram: IRProgram;
@@ -77,6 +118,17 @@ export type OptimizeStages = {
     canonicalRanges: RangeAnalysisResult;
     guardElided: GuardEliminationResult;
     finalRanges: RangeAnalysisResult;
+};
+export type ExprProvenance = {
+    byOutputExprId: Map<number, number[]>;
+};
+export type SerializedExprProvenance = {
+    byOutputExprId: Record<string, number[]>;
+};
+export type OptimizeProvenance = {
+    rawToCanonical: ExprProvenance;
+    canonicalToGuardElided: ExprProvenance;
+    guardElidedToFinalOptimized: ExprProvenance;
 };
 export type ExecuteOptions = {
     artifacts?: OptimizeArtifacts;

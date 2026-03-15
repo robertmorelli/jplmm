@@ -286,10 +286,94 @@ describe("cli integration", () => {
     expect(data.compiler?.floors?.finalOptimized?.label).toBe("final_optimized_ir");
     expect(data.compiler?.floors?.raw?.functions[0]?.name).toBe("safe_div");
     expect(data.compiler?.analyses?.canonicalRanges?.cardinalities?.safe_div).toBeDefined();
+    expect(data.compiler?.analyses?.provenance?.rawToCanonical?.byOutputExprId).toBeDefined();
+    expect(Object.keys(data.compiler?.analyses?.provenance?.canonicalToGuardElided?.byOutputExprId ?? {}).length).toBeGreaterThan(0);
     expect(data.compiler?.edges?.[0]?.from).toBe("raw_ir");
     expect(data.compiler?.edges?.[0]?.functions?.[0]?.status).toBe("equivalent");
+    expect(data.compiler?.edges?.[0]?.certificate?.kind).toBe("canonicalize");
+    expect(data.compiler?.edges?.[0]?.certificate?.validation?.ok).toBe(true);
     expect(data.compiler?.edges?.[1]?.from).toBe("canonical_ir");
+    expect(data.compiler?.edges?.[1]?.to).toBe("canonical_range_facts");
+    expect(data.compiler?.edges?.[1]?.kind).toBe("analysis_soundness");
     expect(data.compiler?.edges?.[1]?.functions?.[0]?.status).toBe("equivalent");
+    expect(data.compiler?.edges?.[1]?.certificate?.kind).toBe("range_analysis");
+    expect(data.compiler?.edges?.[1]?.certificate?.validation?.ok).toBe(true);
+    expect(data.compiler?.analyses?.guardConsumedExprIds?.length).toBeGreaterThan(0);
+    expect(data.compiler?.analyses?.canonicalConsumedRangeFacts?.[0]?.owner).toBe("safe_div");
+  });
+
+  it("proves consumed canonical range facts before guard elimination", () => {
+    const src = `
+      fn safe_root(x:float(0.0,_)): float {
+        ret sqrt(x);
+      }
+    `;
+    const r = runOnSource(src, "semantics");
+
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(r.semantics ?? "{}");
+    const edge = data.compiler?.edges?.find(
+      (candidate: { from: string; to: string }) =>
+        candidate.from === "canonical_ir" && candidate.to === "canonical_range_facts",
+    );
+    expect(edge?.ok).toBe(true);
+    expect(edge?.functions?.[0]?.method).toBe("range_fact_smt");
+    expect(edge?.certificate?.kind).toBe("range_analysis");
+    expect(edge?.certificate?.validation?.ok).toBe(true);
+  });
+
+  it("emits per-expression semantics for globals and function bodies at each IR floor", () => {
+    const src = `
+      let seed = 1 + 2;
+      fn add(x:int): int {
+        ret x + 1;
+      }
+      out seed;
+    `;
+    const r = runOnSource(src, "semantics");
+
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(r.semantics ?? "{}");
+    expect(data.compiler?.floors?.raw?.globals?.[0]?.value?.kind).toBe("scalar");
+    expect(data.compiler?.floors?.raw?.globals?.[0]?.exprSemantics?.length).toBeGreaterThan(0);
+    expect(data.compiler?.floors?.raw?.functions?.[0]?.analysis?.exprSemantics?.length).toBeGreaterThan(0);
+    expect(data.compiler?.floors?.canonical?.functions?.[0]?.analysis?.exprSemantics?.length).toBeGreaterThan(1);
+    expect(
+      data.compiler?.floors?.canonical?.functions?.[0]?.analysis?.exprSemantics?.every(
+        (entry: { value: { kind?: string } | null }) => entry.value?.kind !== undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it("proves raw-to-canonical refinement for recursive array collapse sites", () => {
+    const src = `
+      fn smooth(grid:float[h][w]): float[][] {
+        ret array [y:h, x:w]
+          (grid[y][x] + grid[clamp(y - 1, 0, h - 1)][x]) / 2.0;
+      }
+
+      fn blend_grid(grid:float[h][w], next:float[][], steps:int): float[][] {
+        let gate = to_float(min(1, max(0, steps)));
+        ret array [y:h, x:w] grid[y][x] + gate * (next[y][x] - grid[y][x]);
+      }
+
+      fn relax(grid:float[h][w], steps:int): float[][] {
+        let next = blend_grid(grid, smooth(grid), steps);
+        ret grid;
+        ret rec(next, max(0, steps - 1));
+        rad steps;
+      }
+    `;
+    const r = runOnSource(src, "semantics");
+
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(r.semantics ?? "{}");
+    const edge = data.compiler?.edges?.find(
+      (candidate: { from: string; to: string }) =>
+        candidate.from === "raw_ir" && candidate.to === "canonical_ir",
+    );
+    const relax = edge?.functions?.find((fn: { name: string }) => fn.name === "relax");
+    expect(relax?.status).toBe("equivalent");
   });
 
   it("emits a verified closed-form implementation floor when closed-form optimization applies", () => {

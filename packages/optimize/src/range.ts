@@ -1,4 +1,4 @@
-import type { Type } from "@jplmm/ast";
+import { getArrayExtentNames, getScalarBounds, type Type } from "@jplmm/ast";
 import type { IRExpr, IRProgram, IRStmt } from "@jplmm/ir";
 
 import type { Interval, ParameterRangeHints, RangeAnalysisResult } from "./types";
@@ -19,6 +19,7 @@ export function analyzeRanges(
       const hinted = parameterRangeHints[fn.name]?.[idx];
       const range = hinted ?? defaultInterval(param.type);
       env.set(param.name, range);
+      bindArrayExtentRanges(env, param.type);
       return range;
     });
 
@@ -49,6 +50,18 @@ export function analyzeRanges(
   }
 
   return { rangeMap, cardinalityMap };
+}
+
+function bindArrayExtentRanges(env: Map<string, Interval>, type: Type): void {
+  const extentNames = getArrayExtentNames(type);
+  if (!extentNames) {
+    return;
+  }
+  for (const extentName of extentNames) {
+    if (extentName !== null) {
+      env.set(extentName, { lo: 0, hi: INT32_MAX });
+    }
+  }
 }
 
 function evalRange(
@@ -308,10 +321,18 @@ function computeCardinality(ranges: Interval[], types: Type[]): number | "inf" {
 
 function defaultInterval(type: Type): Interval {
   if (type.tag === "int") {
-    return { lo: INT32_MIN, hi: INT32_MAX };
+    const bounds = getScalarBounds(type);
+    return {
+      lo: bounds?.lo ?? INT32_MIN,
+      hi: bounds?.hi ?? INT32_MAX,
+    };
   }
   if (type.tag === "float") {
-    return { lo: -Infinity, hi: Infinity };
+    const bounds = getScalarBounds(type);
+    return {
+      lo: bounds?.lo ?? -Infinity,
+      hi: bounds?.hi ?? Infinity,
+    };
   }
   return { lo: 0, hi: 0 };
 }

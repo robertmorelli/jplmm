@@ -1,7 +1,7 @@
 fun my_sqrt(x: float, g: float): float {
     ret (g + max(0.0,x)/g) / 2.0
-    rad g - res
-    // rad res
+    // rad g - res
+    rad res
     ret rec(x, res)
 }
 
@@ -34,27 +34,29 @@ fun cooling_steady_state(temp: float, ambient: float): float {
 //     ret rec(res)
 // }
 
-fun fib(x : int) : int {
-    let a = max(0,x)
-    let b = min(1, a)
-    ret b
-    ret max(res, rec(max(0, x - 1)) + rec(max(0, x - 2)))
-    rad x
-}
 
 
-ref fib(x: int): int {
-    let safe_x = clamp(x, 0, 47)
-    let table = [
-        0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 
-        987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025, 
-        121393, 196418, 317811, 514229, 832040, 1346269, 2178309, 
-        3524578, 5702887, 9227465, 14930352, 24157817, 39088169, 
-        63245986, 102334155, 165580141, 267914296, 433494437, 
-        701408733, 1134903170, 1836311903, 2147483647
-    ]
-    ret table[safe_x]
+
+fun foo(a: int): int {
+    ret 1
 }
+
+ref foo(a: int): int {
+    ret (array[i:10] 1)[a]
+}
+
+// ref fib(x: int): int {
+//     let safe_x = clamp(x, 0, 47)
+//     let table = [
+//         0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 
+//         987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025, 
+//         121393, 196418, 317811, 514229, 832040, 1346269, 2178309, 
+//         3524578, 5702887, 9227465, 14930352, 24157817, 39088169, 
+//         63245986, 102334155, 165580141, 267914296, 433494437, 
+//         701408733, 1134903170, 1836311903, 2147483647
+//     ]
+//     ret table[safe_x]
+// }
 
 
 
@@ -69,10 +71,24 @@ fun russian_peasant(a: int, b: int, acc: int): int {
 }
 
 out my_sqrt(64.0, 100.0);
-out fib(0);
-out fib(1);
-out fib(2);
-out fib(3);
-out fib(4);
-out fib(5);
+
+fun transpose(B : int[], shared : int(1,32), cols : int(1,32)) : int[] {
+    ret array[idx : cols * shared]
+        B[(idx % shared) * cols + (idx / shared)]
+}
+
+fun dot_transposed(A : int[], B_T : int[], shared : int(1,32), i : int, j : int) : int {
+    ret sum[k : shared] A[i * shared + k] * B_T[j * shared + k]
+}
+
+fun matmul(A : int[], B : int[], rows : int(1,32), cols : int(1,32), shared : int(1,32)) : int[] {
+    ret array[idx : rows * cols]
+        sum[k : shared] A[(idx / cols) * shared + k] * B[k * cols + (idx % cols)]
+}
+
+ref matmul(A : int[], B : int[], rows : int(1,32), cols : int(1,32), shared : int(1,32)) : int[] {
+    let B_T = transpose(B, shared, cols)
+    ret array[idx : rows * cols]
+        dot_transposed(A, B_T, shared, idx / cols, idx % cols)
+}
 

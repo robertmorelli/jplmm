@@ -47,7 +47,7 @@ describe("cli integration", () => {
     const r = runOnSource(src, "verify");
 
     expect(r.ok).toBe(true);
-    expect(r.proofSummary).toContain("clamp_hi: ref equivalent (scalar_int_smt) - min(max(x, 0), 255) == clamp(x, 0, 255)");
+    expect(r.proofSummary).toContain("clamp_hi: ref equivalent (symbolic_value_smt) - min(max(x, 0), 255) == clamp(x, 0, 255)");
   });
 
   it("returns non-ok on hard errors", () => {
@@ -88,7 +88,7 @@ describe("cli integration", () => {
 
   it("reports optimization passes and implementations in optimize mode", () => {
     const src = `
-      fn steps(x:int): int {
+      fn steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;
@@ -104,7 +104,7 @@ describe("cli integration", () => {
 
   it("emits wat output in wat mode", () => {
     const src = `
-      fn steps(x:int): int {
+      fn steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;
@@ -138,7 +138,7 @@ describe("cli integration", () => {
 
   it("safe mode disables all optional optimizer passes", () => {
     const src = `
-      fun steps(x:int): int {
+      fun steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;
@@ -157,7 +157,7 @@ describe("cli integration", () => {
 
   it("can disable a single pass without turning off the others", () => {
     const src = `
-      fun steps(x:int): int {
+      fun steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;
@@ -268,6 +268,66 @@ describe("cli integration", () => {
     expect(data.backend?.wasm?.functions[0]?.helpers.some((helper: { name: string }) => helper.name === "jplmm_total_div_i32")).toBe(true);
     expect(data.backend?.wasm?.functions[0]?.statements[0]?.expr?.lowering?.helper).toBe("jplmm_sat_add_i32");
     expect(data.backend?.wasm?.helperSemantics?.jplmm_total_div_i32).toContain("returns 0");
+  });
+
+  it("emits compiler-floor semantics and adjacent-floor verification records in semantics mode", () => {
+    const src = `
+      fn safe_div(x:int): int {
+        ret (x / 1) + 1;
+      }
+    `;
+    const r = runOnSource(src, "semantics");
+
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(r.semantics ?? "{}");
+    expect(data.compiler?.floors?.raw?.label).toBe("raw_ir");
+    expect(data.compiler?.floors?.canonical?.label).toBe("canonical_ir");
+    expect(data.compiler?.floors?.guardElided?.label).toBe("guard_elided_ir");
+    expect(data.compiler?.floors?.finalOptimized?.label).toBe("final_optimized_ir");
+    expect(data.compiler?.floors?.raw?.functions[0]?.name).toBe("safe_div");
+    expect(data.compiler?.analyses?.canonicalRanges?.cardinalities?.safe_div).toBeDefined();
+    expect(data.compiler?.edges?.[0]?.from).toBe("raw_ir");
+    expect(data.compiler?.edges?.[0]?.functions?.[0]?.status).toBe("equivalent");
+    expect(data.compiler?.edges?.[1]?.from).toBe("canonical_ir");
+    expect(data.compiler?.edges?.[1]?.functions?.[0]?.status).toBe("equivalent");
+  });
+
+  it("emits a verified closed-form implementation floor when closed-form optimization applies", () => {
+    const src = `
+      fn steps(x:int(0,_)): int {
+        ret 0;
+        ret rec(max(0, x - 1)) + 1;
+        rad x;
+      }
+    `;
+    const r = runOnSource(src, "semantics");
+
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(r.semantics ?? "{}");
+    expect(data.compiler?.floors?.closedFormImpl?.label).toBe("closed_form_impl_ir");
+    expect(data.compiler?.floors?.closedFormImpl?.functions?.[0]?.name).toBe("steps");
+    const closedFormEdge = data.compiler?.edges?.find(
+      (edge: { from: string; to: string }) => edge.from === "final_optimized_ir" && edge.to === "closed_form_impl_ir",
+    );
+    expect(closedFormEdge?.functions?.[0]?.status).toBe("equivalent");
+  });
+
+  it("emits a verified LUT implementation floor when LUT tabulation applies", () => {
+    const src = `
+      fn poly(x:int(0,15)): int {
+        ret x * x + 1;
+      }
+    `;
+    const r = runOnSource(src, "semantics");
+
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(r.semantics ?? "{}");
+    expect(data.compiler?.implementationFloors?.lut?.label).toBe("lut_impl_semantics");
+    expect(data.compiler?.implementationFloors?.lut?.functions?.[0]?.name).toBe("poly");
+    const lutEdge = data.compiler?.edges?.find(
+      (edge: { from: string; to: string }) => edge.from === "final_optimized_ir" && edge.to === "lut_impl_semantics",
+    );
+    expect(lutEdge?.functions?.[0]?.status).toBe("equivalent");
   });
 
   it("supports timed definitions that are used later", () => {

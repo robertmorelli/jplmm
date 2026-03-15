@@ -19,7 +19,7 @@ export const RESEARCH_BENCH_CASES: ResearchBenchCase[] = [
     nativeIterations: 200000,
     optimizeOptions: {},
     source: `
-      fn steps(x:int): int {
+      fn steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;

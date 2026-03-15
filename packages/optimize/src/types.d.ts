@@ -1,5 +1,6 @@
 import type { Type } from "@jplmm/ast";
 import type { IRExpr, IRProgram } from "@jplmm/ir";
+import type { CanonicalizeResult } from "./canonicalize";
 export type Interval = {
     lo: number;
     hi: number;
@@ -68,6 +69,14 @@ export type OptimizeResult = {
     program: IRProgram;
     artifacts: OptimizeArtifacts;
     reports: OptimizePassReport[];
+    stages: OptimizeStages;
+};
+export type OptimizeStages = {
+    rawProgram: IRProgram;
+    canonical: CanonicalizeResult;
+    canonicalRanges: RangeAnalysisResult;
+    guardElided: GuardEliminationResult;
+    finalRanges: RangeAnalysisResult;
 };
 export type ExecuteOptions = {
     artifacts?: OptimizeArtifacts;
@@ -126,6 +135,7 @@ export type GuardEliminationResult = {
     removedNanToZero: number;
     removedTotalDiv: number;
     removedTotalMod: number;
+    usedRangeExprIds: number[];
 };
 export type RangeAnalysisResult = {
     rangeMap: Map<number, Interval>;

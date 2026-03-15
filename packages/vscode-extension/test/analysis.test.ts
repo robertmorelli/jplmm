@@ -73,4 +73,22 @@ describe("document analysis", () => {
 
     expect(findDefinition(index, callRef)?.kind).toBe("function");
   });
+
+  it("indexes named array extents as parameter-like symbols", () => {
+    const source = `
+      fun dims(a:int[n][m]): int {
+        ret n + m;
+      }
+    `;
+    const index = buildDocumentIndex(source);
+    const nRef = source.lastIndexOf("n +");
+    const mRef = source.lastIndexOf("m;");
+    const offset = source.indexOf("ret ") + 4;
+    const labels = new Set(getCompletions(index, offset).map((entry) => entry.label));
+
+    expect(findDefinition(index, nRef)?.name).toBe("n");
+    expect(findDefinition(index, mRef)?.name).toBe("m");
+    expect(labels.has("n")).toBe(true);
+    expect(labels.has("m")).toBe(true);
+  });
 });

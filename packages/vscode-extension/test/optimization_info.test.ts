@@ -11,7 +11,7 @@ import {
 describe("function optimization hover info", () => {
   it("reports closed-form optimizations for eligible functions", () => {
     const frontend = runFrontend(`
-      fun steps(x:int): int {
+      fun steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;

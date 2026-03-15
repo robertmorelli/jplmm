@@ -117,13 +117,13 @@ The compiler:
 - emits a compile error if it cannot prove that
 - otherwise keeps the `ref` body and continues as if there were only one definition
 
-Today the strongest exact checker is for non-recursive scalar `int` functions, with additional fast paths for canonical matches and zero-argument exact execution.
-It also has a recursive scalar-`int` proof path now when both implementations admit a shared decreasing `rad` and the inductive step closes.
+Today non-recursive `ref` proofs lower through the shared symbolic IR/value semantics, with additional fast paths for canonical matches and zero-argument exact execution.
+Recursive `ref` proofs use that same shared symbolic path and add induction on a shared decreasing `rad` when the inductive step closes.
+`sum` participates in that proof path too: small constant sums are unrolled, and larger symbolic sums use fold semantics in the SMT layer.
 
 Still intentionally conservative today:
 
 - gas-based recursive refinements are rejected as unproven
-- calls to recursive helper functions inside the recursive proof subset are rejected as unproven
 - if the inductive proof does not close, the compiler errors instead of guessing
 
 ### `ret` and `res`
@@ -189,6 +189,43 @@ Typical shapes:
 `gas inf` is the explicit escape hatch. It is valid, but verification reports it as unverified.
 
 You may not mix `rad` and `gas` in the same function.
+
+## Parameter Normalization
+
+JPL-- supports two useful kinds of parameter-side normalization metadata.
+
+### Bounded scalars
+
+Scalar parameters can carry entry clamps:
+
+```jpl
+fun clamp_in(x:int(0, 10), y:float(0.0, 1.0)): float {
+  ret to_float(x) + y;
+}
+```
+
+This is equivalent to normalizing the raw arguments at function entry, before the
+body runs and before recursive fixed-point checks compare arguments to current
+parameters.
+
+### Named array extents
+
+Array parameters can bind their runtime dimensions into the body:
+
+```jpl
+fun shape(a:int[n][m]): int {
+  ret n * 100 + m;
+}
+```
+
+For a 2 x 3 array, `n` is `2` and `m` is `3`.
+
+Rules today:
+
+- named array extents are allowed only on direct function parameters
+- they are implicit immutable `int` binders inside the function body
+- they follow partial indexing from the left, so `a:int[n][m]` means `a[i]` has the remaining shape `[m]`
+- `_` still means “unnamed extent”, so `int[_][m]` only binds `m`
 
 ## Arrays, Sums, and Indexing
 
@@ -395,9 +432,9 @@ For editor-driven work:
 2. use the diagnostics panel for frontend errors
 3. proof failures from `rad` / `gas` verification appear inline in Problems
 4. each function header shows source complexity and its canonical `100%` line-coverage witness
-5. parameters and `let` bindings can show inline optimizer range hints such as `: int[0, 50]`
+5. parameters and `let` bindings can show inline optimizer range hints such as `: int(0, 50)`
 6. safe top-level `out` programs show inline result hints while you edit
-7. hover a scalar variable to see any optimizer-proved interval facts such as `int[0, 50]`
+7. hover a scalar variable to see any optimizer-proved interval facts such as `int(0, 50)`
 8. hover a function name to see its source complexity, canonical witness, coarse total-call bound, and optimizer outlook
 9. research-grade matches get a highlighted hover badge when something interesting like Aitken acceleration or linear speculation applies
 10. use the run button to execute top-level commands or implicit `main()`

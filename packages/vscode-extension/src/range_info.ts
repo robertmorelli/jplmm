@@ -1,4 +1,4 @@
-import type { Cmd, Expr, Program, Stmt, Type } from "@jplmm/ast";
+import { getScalarBounds, type Cmd, type Expr, type Program, type Stmt, type Type } from "@jplmm/ast";
 import type { FrontendResult } from "@jplmm/frontend";
 import { buildIR } from "@jplmm/ir";
 import { analyzeRanges, type Interval } from "@jplmm/optimize";
@@ -119,9 +119,9 @@ export function buildVariableRangeAnnotations(info: VariableRangeInfo): Variable
 
 function renderRange(type: Type, interval: Interval): string {
   if (type.tag === "int") {
-    return `int[${formatBound(interval.lo)}, ${formatBound(interval.hi)}]`;
+    return `int(${formatBound(interval.lo)}, ${formatBound(interval.hi)})`;
   }
-  return `float[${formatBound(interval.lo)}, ${formatBound(interval.hi)}]`;
+  return `float(${formatBound(interval.lo)}, ${formatBound(interval.hi)})`;
 }
 
 function formatBound(value: number): string {
@@ -139,10 +139,12 @@ function formatBound(value: number): string {
 
 function isUsefulRange(type: Type, interval: Interval): boolean {
   if (type.tag === "int") {
-    return interval.lo !== INT32_MIN || interval.hi !== INT32_MAX;
+    const bounds = getScalarBounds(type);
+    return interval.lo !== (bounds?.lo ?? INT32_MIN) || interval.hi !== (bounds?.hi ?? INT32_MAX);
   }
   if (type.tag === "float") {
-    return Number.isFinite(interval.lo) || Number.isFinite(interval.hi);
+    const bounds = getScalarBounds(type);
+    return interval.lo !== (bounds?.lo ?? -Infinity) || interval.hi !== (bounds?.hi ?? Infinity);
   }
   return false;
 }

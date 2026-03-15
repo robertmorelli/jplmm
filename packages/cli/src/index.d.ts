@@ -6,6 +6,7 @@ export type CliOptions = {
     disablePasses?: DisableablePassName[];
     cwd?: string;
     verifyBeforeRun?: boolean;
+    proofTimeoutMs?: number;
 };
 export type CliReport = {
     mode: CliMode;

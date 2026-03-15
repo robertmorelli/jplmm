@@ -13,10 +13,12 @@
     "Programming Languages"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onLanguage:jplmm",
     "onCommand:jplmm.runFile",
     "onCommand:jplmm.debugWat",
     "onCommand:jplmm.debugSemantics",
+    "onCommand:jplmm.debugExtensionState",
     "onCommand:jplmm.showWat",
     "workspaceContains:**/*.jplmm"
   ],
@@ -58,6 +60,11 @@
         "icon": "$(debug-alt)"
       },
       {
+        "command": "jplmm.debugExtensionState",
+        "title": "JPLMM: Diagnose Extension State",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "jplmm.showWat",
         "title": "JPLMM: Show WAT For Active File (Legacy)"
       }
@@ -66,17 +73,17 @@
       "editor/title": [
         {
           "command": "jplmm.runFile",
-          "when": "editorLangId == jplmm",
+          "when": "editorLangId == jplmm || resourceExtname == .jplmm",
           "group": "navigation"
         },
         {
           "command": "jplmm.debugWat",
-          "when": "editorLangId == jplmm",
+          "when": "editorLangId == jplmm || resourceExtname == .jplmm",
           "group": "navigation@1"
         },
         {
           "command": "jplmm.debugSemantics",
-          "when": "editorLangId == jplmm",
+          "when": "editorLangId == jplmm || resourceExtname == .jplmm",
           "group": "navigation@2"
         }
       ],
@@ -102,7 +109,7 @@
       {
         "command": "jplmm.runFile",
         "key": "f5",
-        "when": "editorLangId == jplmm && editorTextFocus && !inDebugMode"
+        "when": "(editorLangId == jplmm || resourceExtname == .jplmm) && editorTextFocus && !inDebugMode"
       }
     ],
     "configuration": {
@@ -133,10 +140,26 @@
           "default": true,
           "description": "Show inline results for safe top-level out expressions while editing."
         },
+        "jplmm.editor.inlineExecutableSemantics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Legacy alias for function semantic hovers. When enabled, executable semantics appear on function-name hover using the shared proof semantics."
+        },
+        "jplmm.editor.functionSemanticHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Lisp-style executable semantics in the hover for function names."
+        },
         "jplmm.editor.inlineVariableRanges": {
           "type": "boolean",
           "default": true,
           "description": "Show inline optimizer-proved scalar ranges on parameters and let bindings."
+        },
+        "jplmm.editor.proofTimeoutMs": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Maximum milliseconds to spend on solver-backed proofs for editor diagnostics, code lenses, hovers, and inlay hints. Values above 2000ms are clamped to the hard 2000ms limit."
         },
         "jplmm.run.verifyBeforeRun": {
           "type": "boolean",
@@ -167,6 +190,17 @@
               "linear_speculation"
             ]
           }
+        },
+        "jplmm.run.proofTimeoutMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 1,
+          "description": "Maximum milliseconds to spend on solver-backed proofs for explicit run/debug commands. Values above 2000ms are clamped to the hard 2000ms limit."
+        },
+        "jplmm.debug.traceExtension": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write verbose activation and document-refresh traces to the JPLMM output channel."
         }
       }
     }
@@ -179,6 +213,7 @@
   },
   "dependencies": {
     "@jplmm/cli": "file:../cli",
+    "@jplmm/proof": "file:../proof",
     "@jplmm/frontend": "file:../frontend",
     "@jplmm/grammar": "file:../grammar",
     "@jplmm/ir": "file:../ir",

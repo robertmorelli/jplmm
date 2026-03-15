@@ -1,0 +1,59 @@
+
+fun body(A: int[], B: int[], idx: int, cols: int, shared: int, k: int): int {
+    let idx1 = (idx / cols) * shared + k
+    let idx2 = k * cols + (idx % cols)
+    ret A[idx1] * B[idx2]
+}
+
+fun idxl1(idx: int, cols: int, shared: int, k: int): int {
+    ret (idx / cols) * shared + k
+}
+
+fun idxl2(idx: int, cols: int, shared: int, k: int): int {
+    ret k * cols + (idx % cols)
+}
+
+fun matmul(A : int[], B : int[], rows : int, cols : int, shared : int) : int[] {
+    ret array[idx : rows * cols]
+        sum[k : shared] A[(idx / cols) * shared + k] * B[k * cols + (idx % cols)]
+}
+
+ref matmul(A:int[], B:int[], rows:int, cols:int, shared:int): int[] {
+    ret array[idx:rows * cols]
+        sum[k:shared] body(A, B, idx, cols, shared, k)
+}
+
+ref matmul(A:int[], B:int[], rows:int, cols:int, shared:int): int[] {
+    let idxl1s = array[idx:rows * cols]
+        array[k:shared] idxl1(idx, cols, shared, k)
+    let idxl2s = array[idx:rows * cols]
+        array[k:shared] idxl2(idx, cols, shared, k)
+    ret array[idx:rows * cols]
+        sum[k:shared] A[idxl1s[idx][k]] * B[idxl2s[idx][k]]
+}
+
+
+fun transpose(B : int[], shared : int, cols : int) : int[] {
+    ret array[idx : cols * shared]
+        B[(idx % shared) * cols + (idx / shared)]
+}
+
+// fun idxl1(idx: int, cols: int, shared: int, k: int): int {
+//     ret (idx / cols) * shared + k
+// }
+
+// transposed index: row is (idx % cols), col is k
+fun idxl_T(idx: int, cols: int, shared: int, k: int): int {
+    ret (idx % cols) * shared + k
+}
+
+// Step 1: replace B with transpose(B), adjust index from idxl2 to idxl_T
+// ref matmul(A:int[], B:int[], rows:int, cols:int, shared:int): int[] {
+//     let B_T = transpose(B, shared, cols)
+//     let idxl1s = array[idx:rows * cols]
+//         array[k:shared] idxl1(idx, cols, shared, k)
+//     let idxl_Ts = array[idx:rows * cols]
+//         array[k:shared] idxl_T(idx, cols, shared, k)
+//     ret array[idx:rows * cols]
+//         sum[k:shared] A[idxl1s[idx][k]] * B_T[idxl_Ts[idx][k]]
+// }

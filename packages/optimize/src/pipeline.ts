@@ -33,7 +33,8 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
     ],
   });
 
-  let rangeResult = analyzeRanges(current, options.parameterRangeHints);
+  const canonicalRangeResult = analyzeRanges(current, options.parameterRangeHints);
+  let rangeResult = canonicalRangeResult;
   reports.push({
     name: "range_analysis",
     changed: true,
@@ -42,8 +43,16 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
     ),
   });
 
+  let guardResult = {
+    program: current,
+    changed: false,
+    removedNanToZero: 0,
+    removedTotalDiv: 0,
+    removedTotalMod: 0,
+    usedRangeExprIds: [] as number[],
+  };
   if (!disabledPasses.has("guard_elimination")) {
-    const guardResult = eliminateGuards(current, rangeResult.rangeMap);
+    guardResult = eliminateGuards(current, rangeResult.rangeMap);
     current = guardResult.program;
     reports.push({
       name: "guard_elimination",
@@ -203,6 +212,13 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
     program: current,
     artifacts,
     reports,
+    stages: {
+      rawProgram: program,
+      canonical,
+      canonicalRanges: canonicalRangeResult,
+      guardElided: guardResult,
+      finalRanges: rangeResult,
+    },
   };
 }
 

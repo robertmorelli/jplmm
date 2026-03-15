@@ -1,0 +1,26 @@
+// matmul_helper.jplmm
+//
+// FUTURE TARGET — requires callee summarization with array arguments.
+// Currently blocked: dot(A, B, ...) goes opaque in ir.ts because
+// A and B are array args.
+//
+// What needs to exist:
+//   - for non-recursive scalar-return helpers like dot,
+//     analyze the callee symbolically
+//   - substitute array args as read-functions, scalar args positionally
+//   - inline/summarize the callee result instead of treating it as opaque
+
+fun dot(A : int[], B : int[], shared : int, cols : int, i : int, j : int) : int {
+    ret sum[k : shared] A[i * shared + k] * B[k * cols + j]
+}
+
+fun matmul(A : int[], B : int[], rows : int, cols : int, shared : int) : int[] {
+    ret array[idx : rows * cols]
+        sum[k : shared] A[(idx / cols) * shared + k] * B[k * cols + (idx % cols)]
+}
+
+// factor the sum body through dot()
+ref matmul(A : int[], B : int[], rows : int, cols : int, shared : int) : int[] {
+    ret array[idx : rows * cols]
+        dot(A, B, shared, cols, idx / cols, idx % cols)
+}

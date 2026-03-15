@@ -21,14 +21,23 @@ export function optimizeProgram(program, options = {}) {
             `sat_int_ops=${canonical.stats.satAddInserted + canonical.stats.satSubInserted + canonical.stats.satMulInserted + canonical.stats.satNegInserted}`,
         ],
     });
-    let rangeResult = analyzeRanges(current, options.parameterRangeHints);
+    const canonicalRangeResult = analyzeRanges(current, options.parameterRangeHints);
+    let rangeResult = canonicalRangeResult;
     reports.push({
         name: "range_analysis",
         changed: true,
         details: [...rangeResult.cardinalityMap.entries()].map(([fnName, info]) => `${fnName}: cardinality=${info.cardinality}`),
     });
+    let guardResult = {
+        program: current,
+        changed: false,
+        removedNanToZero: 0,
+        removedTotalDiv: 0,
+        removedTotalMod: 0,
+        usedRangeExprIds: [],
+    };
     if (!disabledPasses.has("guard_elimination")) {
-        const guardResult = eliminateGuards(current, rangeResult.rangeMap);
+        guardResult = eliminateGuards(current, rangeResult.rangeMap);
         current = guardResult.program;
         reports.push({
             name: "guard_elimination",
@@ -184,6 +193,13 @@ export function optimizeProgram(program, options = {}) {
         program: current,
         artifacts,
         reports,
+        stages: {
+            rawProgram: program,
+            canonical,
+            canonicalRanges: canonicalRangeResult,
+            guardElided: guardResult,
+            finalRanges: rangeResult,
+        },
     };
 }
 function appendResearchCandidate(target, fnName, candidate) {

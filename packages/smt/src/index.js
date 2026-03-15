@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+export const HARD_Z3_TIMEOUT_MS = 2000;
 export const INT32_MIN = -2147483648;
 export const INT32_MAX = 2147483647;
 const Z3_PATH = "z3";
@@ -56,8 +57,8 @@ export function buildJplScalarPrelude() {
 export function sanitizeSymbol(name) {
     return name.replace(/[^A-Za-z0-9_]/g, "_");
 }
-export function checkSat(lines) {
-    const result = runZ3(lines, ["(check-sat)"]);
+export function checkSat(lines, options = {}) {
+    const result = runZ3(lines, ["(check-sat)"], options);
     if (!result.ok) {
         return result;
     }
@@ -67,9 +68,9 @@ export function checkSat(lines) {
         status: classifyZ3Output(result.output),
     };
 }
-export function checkSatAndGetValues(lines, symbols) {
+export function checkSatAndGetValues(lines, symbols, options = {}) {
     if (symbols.length === 0) {
-        const result = checkSat(lines);
+        const result = checkSat(lines, options);
         if (!result.ok) {
             return result;
         }
@@ -83,7 +84,7 @@ export function checkSatAndGetValues(lines, symbols) {
     const result = runZ3(lines, [
         "(check-sat)",
         `(get-value (${symbols.join(" ")}))`,
-    ]);
+    ], options);
     if (!result.ok) {
         return result;
     }
@@ -93,6 +94,17 @@ export function checkSatAndGetValues(lines, symbols) {
         output: result.output,
         status,
         values: status === "sat" ? parseGetValueOutput(result.output) : null,
+    };
+}
+export function withHardTimeout(options = {}, nowMs = Date.now()) {
+    const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
+    const deadlineAtMs = options.deadlineAtMs === undefined
+        ? nowMs + timeoutMs
+        : Math.min(options.deadlineAtMs, nowMs + timeoutMs);
+    return {
+        ...options,
+        timeoutMs,
+        deadlineAtMs,
     };
 }
 export function parseGetValueOutput(output) {
@@ -123,15 +135,30 @@ export function parseZ3Int(value) {
     }
     return null;
 }
-function runZ3(lines, commands) {
-    const result = spawnSync(Z3_PATH, ["-in"], {
-        input: `${[...lines, ...commands].join("\n")}\n`,
-        encoding: "utf8",
-    });
-    if (result.error) {
+function runZ3(lines, commands, options = {}) {
+    const budget = resolveRunBudget(options);
+    if (budget.remainingTimeoutMs <= 0) {
         return {
             ok: false,
-            error: result.error.message,
+            error: `z3 timed out after ${budget.timeoutMs}ms`,
+            timedOut: true,
+        };
+    }
+    const inputLines = [`(set-option :timeout ${budget.remainingTimeoutMs})`, ...lines, ...commands];
+    const result = spawnSync(Z3_PATH, ["-in"], {
+        input: `${inputLines.join("\n")}\n`,
+        encoding: "utf8",
+        timeout: budget.remainingTimeoutMs + 250,
+        killSignal: "SIGKILL",
+    });
+    if (result.error) {
+        const timedOut = isTimeoutError(result.error);
+        return {
+            ok: false,
+            error: timedOut
+                ? `z3 timed out after ${budget.timeoutMs}ms`
+                : result.error.message,
+            timedOut,
         };
     }
     return {
@@ -150,6 +177,27 @@ function classifyZ3Output(output) {
         return "unknown";
     }
     return "other";
+}
+function normalizeTimeoutMs(timeoutMs) {
+    if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        return HARD_Z3_TIMEOUT_MS;
+    }
+    return Math.min(HARD_Z3_TIMEOUT_MS, Math.max(1, Math.floor(timeoutMs)));
+}
+function resolveRunBudget(options, nowMs = Date.now()) {
+    const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
+    const deadlineAtMs = options.deadlineAtMs === undefined
+        ? nowMs + timeoutMs
+        : Math.min(options.deadlineAtMs, nowMs + timeoutMs);
+    return {
+        timeoutMs,
+        deadlineAtMs,
+        remainingTimeoutMs: Math.max(0, Math.floor(deadlineAtMs - nowMs)),
+    };
+}
+function isTimeoutError(error) {
+    const code = error.code;
+    return code === "ETIMEDOUT";
 }
 function parseSExpr(source) {
     const tokens = tokenizeSExpr(source);

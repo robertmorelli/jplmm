@@ -141,6 +141,18 @@ describe("verifyProgram", () => {
     expect(diagnostics).toHaveLength(0);
   });
 
+  it("uses bounded scalar parameter domains in rad proofs", () => {
+    const { proofMap, diagnostics } = verify(`
+      fn f(x:int(0,_)): int {
+        ret x;
+        ret rec(x - 1);
+        rad x;
+      }
+    `);
+    expect(proofMap.get("f")?.status).toBe("verified");
+    expect(diagnostics).toHaveLength(0);
+  });
+
   it("verifies float contraction measures via SMT", () => {
     const { proofMap, diagnostics } = verify(`
       fn settle(target : float, g : float) : float {

@@ -40,9 +40,12 @@ describe("editor annotations", () => {
     `);
     const annotations = collectFunctionRefinementAnnotations(frontend.refinements);
 
-    expect(annotations).toHaveLength(1);
-    expect(annotations[0]?.name).toBe("clamp_hi");
-    expect(annotations[0]?.label).toBe("valid refinement via canonical equivalence");
+    expect(annotations).toHaveLength(2);
+    expect(annotations.map((annotation) => annotation.name)).toEqual(["clamp_hi", "clamp_hi"]);
+    expect(annotations.map((annotation) => annotation.label)).toEqual([
+      "refined by later ref via canonical equivalence",
+      "valid refinement via canonical equivalence",
+    ]);
   });
 
   it("only allows inline out annotations for safe top-level programs", () => {

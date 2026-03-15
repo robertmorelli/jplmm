@@ -1,0 +1,10 @@
+fun matmul(A : int[], B : int[], rows : int, cols : int, shared : int) : int[] {
+    ret array[idx : rows * cols]
+        sum[k : shared] A[(idx / cols) * shared + k] * B[k * cols + (idx % cols)]
+}
+
+// commute multiply: b * a instead of a * b
+ref matmul(A : int[], B : int[], rows : int, cols : int, shared : int) : int[] {
+    ret array[idx : rows * cols]
+        sum[k : shared] B[k * cols + (idx % cols)] * A[(idx / cols) * shared + k]
+}

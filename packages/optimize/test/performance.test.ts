@@ -15,7 +15,7 @@ function compile(source: string) {
 describe("optimization performance characteristics", () => {
   it("uses closed-form lowering to remove recursive work", () => {
     const program = compile(`
-      fn steps(x:int): int {
+      fn steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;

@@ -1,3 +1,4 @@
+import { getArrayExtentNames } from "@jplmm/ast";
 import { FLOAT_T, INT_T, VOID_T } from "./types";
 export function buildIR(program, typeMap) {
     const fnSigs = collectFnSigs(program);
@@ -81,6 +82,7 @@ function lowerFunction(cmd, fnSigs, structDefs, typeMap) {
     const env = new Map();
     for (const p of cmd.params) {
         env.set(p.name, p.type);
+        bindArrayExtentNames(env, p.type);
     }
     const ctx = {
         env,
@@ -245,6 +247,9 @@ function lowerExpr(expr, ctx, isTailPosition) {
                         tag: "array",
                         element: array.resultType.element,
                         dims: array.resultType.dims - indices.length,
+                        ...(sliceArrayExtentNames(array.resultType, indices.length)
+                            ? { extentNames: sliceArrayExtentNames(array.resultType, indices.length) }
+                            : {}),
                     }
                 : VOID_T;
             return {
@@ -298,6 +303,25 @@ function lowerExpr(expr, ctx, isTailPosition) {
             return _never;
         }
     }
+}
+function bindArrayExtentNames(env, type) {
+    const extentNames = getArrayExtentNames(type);
+    if (!extentNames) {
+        return;
+    }
+    for (const extentName of extentNames) {
+        if (extentName !== null) {
+            env.set(extentName, INT_T);
+        }
+    }
+}
+function sliceArrayExtentNames(type, consumed) {
+    const names = getArrayExtentNames(type);
+    if (!names) {
+        return undefined;
+    }
+    const sliced = names.slice(consumed);
+    return sliced.some((name) => name !== null) ? sliced : undefined;
 }
 function lowerBindings(bindings, ctx) {
     const lowered = [];

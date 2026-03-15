@@ -15,7 +15,7 @@ function compile(source: string) {
 describe("native arm64 backend", () => {
   it("runs closed-form lowering through a native arm64 binary", () => {
     const program = compile(`
-      fn steps(x:int): int {
+      fn steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;
@@ -146,5 +146,34 @@ describe("native arm64 backend", () => {
     } finally {
       run.cleanup();
     }
+  });
+
+  it("normalizes bounded scalar parameters in native code", () => {
+    const program = compile(`
+      fn clamp_in(x:int(0, 10), y:float(0.0, 1.0)): float {
+        ret to_float(x) + y;
+      }
+    `);
+    const run = runNativeFunction(program, "clamp_in", [-5, 2.5]);
+
+    try {
+      expect(run.value).toBeCloseTo(1.0, 6);
+    } finally {
+      run.cleanup();
+    }
+  });
+
+  it("materializes named array extents as native locals", () => {
+    const program = compile(`
+      fn shape(a:int[n][m]): int {
+        ret n * 100 + m;
+      }
+    `);
+    const source = emitNativeRunnerSource(program, "shape");
+
+    expect(source).toContain("int32_t n = 0;");
+    expect(source).toContain("int32_t m = 0;");
+    expect(source).toContain("n = jplmm_array_dim(a, 0);");
+    expect(source).toContain("m = jplmm_array_dim(a, 1);");
   });
 });

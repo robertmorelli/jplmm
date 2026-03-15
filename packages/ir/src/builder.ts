@@ -1,4 +1,4 @@
-import type { Binding, Cmd, Expr, Program, Stmt, Type } from "@jplmm/ast";
+import { getArrayExtentNames, type Binding, type Cmd, type Expr, type Program, type Stmt, type Type } from "@jplmm/ast";
 
 import type { IRBinding, IRExpr, IRFunction, IRGlobalLet, IRProgram, IRStmt, IRStructDef } from "./nodes";
 import { FLOAT_T, INT_T, VOID_T } from "./types";
@@ -114,6 +114,7 @@ function lowerFunction(
   const env = new Map<string, Type>();
   for (const p of cmd.params) {
     env.set(p.name, p.type);
+    bindArrayExtentNames(env, p.type);
   }
   const ctx: LowerCtx = {
     env,
@@ -300,6 +301,9 @@ function lowerExpr(expr: Expr, ctx: LowerCtx, isTailPosition: boolean): IRExpr {
                 tag: "array",
                 element: array.resultType.element,
                 dims: array.resultType.dims - indices.length,
+                ...(sliceArrayExtentNames(array.resultType, indices.length)
+                  ? { extentNames: sliceArrayExtentNames(array.resultType, indices.length)! }
+                  : {}),
               }
           : VOID_T;
       return {
@@ -353,6 +357,27 @@ function lowerExpr(expr: Expr, ctx: LowerCtx, isTailPosition: boolean): IRExpr {
       return _never;
     }
   }
+}
+
+function bindArrayExtentNames(env: Map<string, Type>, type: Type): void {
+  const extentNames = getArrayExtentNames(type);
+  if (!extentNames) {
+    return;
+  }
+  for (const extentName of extentNames) {
+    if (extentName !== null) {
+      env.set(extentName, INT_T);
+    }
+  }
+}
+
+function sliceArrayExtentNames(type: Extract<Type, { tag: "array" }>, consumed: number): Array<string | null> | undefined {
+  const names = getArrayExtentNames(type);
+  if (!names) {
+    return undefined;
+  }
+  const sliced = names.slice(consumed);
+  return sliced.some((name) => name !== null) ? sliced : undefined;
 }
 
 function lowerBindings(bindings: Binding[], ctx: LowerCtx): IRBinding[] {

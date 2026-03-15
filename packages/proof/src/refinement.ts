@@ -1,124 +1,117 @@
-import type { Cmd, Param, Type } from "@jplmm/ast";
+import { sameType as sameDeclaredType, type Cmd, type Param, type Type } from "@jplmm/ast";
 import type { IRExpr, IRFunction, IRProgram } from "@jplmm/ir";
 import { executeProgram, type RuntimeValue } from "@jplmm/optimize";
 import {
   INT32_MAX,
   INT32_MIN,
-  buildJplInt32Prelude as buildIntPrelude,
   buildJplScalarPrelude,
   checkSat,
   sanitizeSymbol as sanitize,
+  withHardTimeout,
+  type Z3RunOptions,
 } from "@jplmm/smt";
 
 import {
-  type IntRefineExpr,
-  collectCalls,
-  collectSummaryVars,
-  emitIntExpr,
-  formatIntAssignments,
-  isSupportedIntBuiltin,
-  queryIntCounterexample,
-  queryIntValues,
-  renderIntExpr,
-  substituteIntExpr,
-} from "./int";
-import {
   analyzeIrFunction,
+  buildIrCallSummaries,
   buildCanonicalProgram,
   functionsAlphaEquivalent,
   hasRec,
+  type IrCallSummary,
   type IrFunctionAnalysis,
+  type IrRecSite,
 } from "./ir";
 import {
+  appendSmtEncodingState,
+  arrayDims,
+  appendScalarTypeConstraints,
+  buildComparisonEnvFromParams,
   buildMeasureCounterexampleQuery,
   collectValueVars,
+  createSmtEncodingState,
+  type EmitOverrides,
   emitScalarWithOverrides,
+  emitValueSexpr,
   emitValueEquality,
   extendSymbolicSubstitution,
+  normalizeValueForComparison,
+  normalizeValueForType,
+  formatModelAssignments,
   queryCounterexample,
+  queryIntModelValues,
+  readSymbolicArray,
   renderScalarExpr as renderSharedScalarExpr,
   renderValueExpr,
-  scalarExprType,
   substituteScalar as substituteSharedScalar,
   substituteValue,
+  symbolizeAbstractValue,
   symbolizeParamValue,
   type ScalarExpr,
+  type ScalarTag,
+  type SymArray,
   type SymValue,
 } from "./scalar";
-
-export type IntFunctionSummary = {
-  paramNames: string[];
-  expr: IntRefineExpr;
-};
 
 export type RefinementMethod =
   | "canonical"
   | "exact_zero_arity"
-  | "scalar_int_smt"
-  | "scalar_int_recursive_induction";
+  | "symbolic_value_alpha"
+  | "symbolic_value_smt"
+  | "symbolic_recursive_induction";
 
 export type RefinementCheck =
   | { ok: true; method: RefinementMethod; detail: string; equivalence?: string }
   | { ok: false; code: "REF_MISMATCH" | "REF_UNPROVEN"; message: string };
 
-type SummaryResult =
-  | { ok: true; summary: IntFunctionSummary }
-  | { ok: false; reason: string };
-
-type RecursiveScalarSite = {
-  stmtIndex: number;
-  resultSymbol: string;
-  currentRes: ScalarExpr;
-  argValues: Map<number, SymValue>;
-  issues: string[];
-};
-
-type RecursiveScalarFunctionSummary = {
+type SymbolicFunctionSummary = {
   fn: IRFunction;
-  analysis: IrFunctionAnalysis;
-  expr: ScalarExpr;
-  rads: ScalarExpr[];
-  hasGas: boolean;
-  helperRecCalls: string[];
+  analysis: IrFunctionAnalysis & { result: SymValue };
   structDefs: Map<string, Array<{ name: string; type: Type }>>;
-  recSites: RecursiveScalarSite[];
 };
-
-export function computeFunctionSummary(
-  fnName: string,
-  commands: Cmd[],
-  typeMap: Map<number, Type>,
-  summaries: Map<string, IntFunctionSummary>,
-): IntFunctionSummary | null {
-  const canonical = buildCanonicalProgram({ commands }, typeMap);
-  const fn = canonical.functions.find((candidate) => candidate.name === fnName);
-  if (!fn) {
-    return null;
-  }
-  const availableFns = new Map(canonical.functions.map((candidate) => [candidate.name, candidate] as const));
-  const env = new Map(summaries);
-  env.delete(fnName);
-  const summary = summarizeIntFunction(fn, availableFns, env);
-  return summary.ok ? summary.summary : null;
-}
 
 export function checkFunctionRefinement(
   fnName: string,
   baselineCommands: Cmd[],
   refinedCommands: Cmd[],
   typeMap: Map<number, Type>,
-  summaries: Map<string, IntFunctionSummary>,
+  solverOptions: Z3RunOptions = {},
 ): RefinementCheck {
   const baselineCanonical = buildCanonicalProgram({ commands: baselineCommands }, typeMap);
   const refinedCanonical = buildCanonicalProgram({ commands: refinedCommands }, typeMap);
-  const baselineFn = baselineCanonical.functions.find((candidate) => candidate.name === fnName);
-  const refinedFn = refinedCanonical.functions.find((candidate) => candidate.name === fnName);
+  return checkIrFunctionRefinement(
+    fnName,
+    baselineCanonical,
+    refinedCanonical,
+    solverOptions,
+    "canonical",
+  );
+}
+
+export function checkIrFunctionRefinement(
+  fnName: string,
+  baselineProgram: IRProgram,
+  refinedProgram: IRProgram,
+  solverOptions: Z3RunOptions = {},
+  boundaryLabel = "ir",
+): RefinementCheck {
+  const proofSolverOptions = withHardTimeout(solverOptions);
+  const baselineFn = baselineProgram.functions.find((candidate) => candidate.name === fnName);
+  const refinedFn = refinedProgram.functions.find((candidate) => candidate.name === fnName);
 
   if (!baselineFn || !refinedFn) {
     return {
       ok: false,
       code: "REF_UNPROVEN",
-      message: `ref '${fnName}' could not be analyzed because one implementation disappeared during canonical lowering`,
+      message: `${boundaryLabel} '${fnName}' could not be analyzed because one implementation disappeared during lowering`,
+    };
+  }
+
+  const signatureProblem = compareIrFunctionSignature(baselineFn, refinedFn);
+  if (signatureProblem) {
+    return {
+      ok: false,
+      code: "REF_UNPROVEN",
+      message: `${boundaryLabel} '${fnName}' changed signature across lowering: ${signatureProblem}`,
     };
   }
 
@@ -126,13 +119,13 @@ export function checkFunctionRefinement(
     return {
       ok: true,
       method: "canonical",
-      detail: "canonical semantics are alpha-equivalent after lowering",
+      detail: `${boundaryLabel} semantics are alpha-equivalent after lowering`,
     };
   }
 
   if (!hasRec(baselineFn) && !hasRec(refinedFn) && baselineFn.params.length === 0 && refinedFn.params.length === 0) {
-    const baselineValue = executeProgram(baselineCanonical, fnName, []).value;
-    const refinedValue = executeProgram(refinedCanonical, fnName, []).value;
+    const baselineValue = executeProgram(baselineProgram, fnName, []).value;
+    const refinedValue = executeProgram(refinedProgram, fnName, []).value;
     if (runtimeValueEquals(baselineValue, refinedValue)) {
       return {
         ok: true,
@@ -147,133 +140,109 @@ export function checkFunctionRefinement(
     };
   }
 
-  const priorSummaries = new Map(summaries);
-  priorSummaries.delete(fnName);
-  const baselineFunctions = new Map(baselineCanonical.functions.map((candidate) => [candidate.name, candidate] as const));
-  const refinedFunctions = new Map(refinedCanonical.functions.map((candidate) => [candidate.name, candidate] as const));
   const baselineHasRec = hasRec(baselineFn);
   const refinedHasRec = hasRec(refinedFn);
+  const baselineCallSummaries = buildIrCallSummaries(baselineProgram, undefined, "baseline_call_");
+  const refinedCallSummaries = buildIrCallSummaries(refinedProgram, undefined, "ref_call_");
 
-  if (!baselineHasRec && !refinedHasRec) {
-    const baselineSummary = summarizeIntFunction(baselineFn, baselineFunctions, priorSummaries);
-    const refinedSummary = summarizeIntFunction(refinedFn, refinedFunctions, priorSummaries);
-    if (baselineSummary.ok && refinedSummary.ok) {
-      return proveIntSummaryEquivalence(fnName, baselineSummary.summary, refinedSummary.summary);
-    }
-
+  const baselineSummary = summarizeSymbolicFunction(
+    baselineFn,
+    baselineProgram.structs,
+    "baseline_",
+    baselineCallSummaries,
+  );
+  const refinedSummary = summarizeSymbolicFunction(
+    refinedFn,
+    refinedProgram.structs,
+    "ref_",
+    refinedCallSummaries,
+  );
+  if (!baselineSummary.ok || !refinedSummary.ok) {
     const reasons = [
       baselineSummary.ok ? null : `baseline: ${baselineSummary.reason}`,
       refinedSummary.ok ? null : `ref: ${refinedSummary.reason}`,
     ].filter((reason): reason is string => reason !== null);
-
     return {
       ok: false,
       code: "REF_UNPROVEN",
       message:
         reasons.length > 0
-          ? `ref '${fnName}' could not be proven equivalent: ${reasons.join("; ")}`
-          : `ref '${fnName}' could not be proven equivalent with the current refinement checker`,
+          ? `${boundaryLabel} '${fnName}' could not be proven equivalent: ${reasons.join("; ")}`
+          : `${boundaryLabel} '${fnName}' could not be proven equivalent with the current refinement checker`,
     };
   }
 
-  const baselineSummary = summarizeRecursiveScalarFunction(
-    baselineFn,
-    baselineFunctions,
-    baselineCanonical.structs,
-  );
-  const refinedSummary = summarizeRecursiveScalarFunction(
-    refinedFn,
-    refinedFunctions,
-    refinedCanonical.structs,
-  );
-  if (baselineSummary.ok && refinedSummary.ok) {
-    return proveRecursiveScalarSummaryEquivalence(
+  const alignedRefined = alignSymbolicSummary(refinedSummary.summary, baselineSummary.summary.fn.params);
+
+  if (!baselineHasRec && !refinedHasRec) {
+    return proveSymbolicSummaryEquivalence(
       fnName,
-      baselineCanonical,
-      refinedCanonical,
       baselineSummary.summary,
-      alignRecursiveScalarSummary(refinedSummary.summary, baselineSummary.summary.fn.params),
+      alignedRefined,
+      proofSolverOptions,
     );
   }
-
-  const reasons = [
-    baselineSummary.ok ? null : `baseline: ${baselineSummary.reason}`,
-    refinedSummary.ok ? null : `ref: ${refinedSummary.reason}`,
-  ].filter((reason): reason is string => reason !== null);
-
-  return {
-    ok: false,
-    code: "REF_UNPROVEN",
-    message:
-      reasons.length > 0
-        ? `ref '${fnName}' could not be proven equivalent: ${reasons.join("; ")}`
-        : `ref '${fnName}' could not be proven equivalent with the current refinement checker`,
-  };
+  return proveRecursiveSummaryEquivalence(
+    fnName,
+    baselineProgram,
+    refinedProgram,
+    baselineSummary.summary,
+    alignedRefined,
+    proofSolverOptions,
+  );
 }
 
-function summarizeRecursiveScalarFunction(
-  fn: IRFunction,
-  availableFns: Map<string, IRFunction>,
-  structs: IRProgram["structs"],
-): { ok: true; summary: RecursiveScalarFunctionSummary } | { ok: false; reason: string } {
-  if (fn.retType.tag !== "int") {
-    return { ok: false, reason: "only scalar int refinements have an exact recursive checker today" };
+function compareIrFunctionSignature(
+  baseline: IRFunction,
+  candidate: IRFunction,
+): string | null {
+  if (baseline.params.length !== candidate.params.length) {
+    return "arity differs";
   }
+  for (let i = 0; i < baseline.params.length; i += 1) {
+    if (!sameDeclaredType(baseline.params[i]!.type, candidate.params[i]!.type)) {
+      return `parameter ${i + 1} type differs`;
+    }
+  }
+  if (!sameDeclaredType(baseline.retType, candidate.retType)) {
+    return "return type differs";
+  }
+  return null;
+}
 
+function summarizeSymbolicFunction(
+  fn: IRFunction,
+  structs: IRProgram["structs"],
+  symbolPrefix: string,
+  callSummaries: Map<string, IrCallSummary> = new Map(),
+): { ok: true; summary: SymbolicFunctionSummary } | { ok: false; reason: string } {
   const structDefs = new Map(structs.map((struct) => [struct.name, struct.fields] as const));
-  const helperRecCalls = collectDirectRecursiveHelperCalls(fn, availableFns);
-  if (helperRecCalls.length > 0) {
+  const analysis = analyzeIrFunction(fn, structDefs, symbolPrefix, { callSummaries });
+  const result = analysis.result ?? defaultSymbolicResultForType(fn.retType, structDefs);
+  if (!result) {
     return {
       ok: false,
-      reason: helperRecCalls.length === 1
-        ? `call to recursive helper '${helperRecCalls[0]}' needs a relational refinement proof beyond the current direct-recursion checker`
-        : `calls to recursive helpers ${helperRecCalls.map((name) => `'${name}'`).join(", ")} need a relational refinement proof beyond the current direct-recursion checker`,
+      reason: `return type '${fn.retType.tag}' does not yet have a shared symbolic default when no ret has executed`,
     };
-  }
-
-  const analysis = analyzeIrFunction(fn, structDefs);
-  if (!analysis.result || analysis.result.kind !== "scalar" || scalarExprType(analysis.result.expr) !== "int") {
-    return { ok: false, reason: "only scalar int return values are supported by the recursive refinement checker" };
-  }
-
-  const recSites: RecursiveScalarSite[] = [];
-  for (const site of analysis.recSites) {
-    if (!site.resultSymbol) {
-      return { ok: false, reason: "opaque recursive results are not yet supported in recursive refinement proofs" };
-    }
-    if (!site.currentRes || site.currentRes.kind !== "scalar" || scalarExprType(site.currentRes.expr) !== "int") {
-      return { ok: false, reason: "recursive collapse currently requires an int-valued res at each rec site" };
-    }
-    recSites.push({
-      stmtIndex: site.stmtIndex,
-      resultSymbol: site.resultSymbol,
-      currentRes: site.currentRes.expr,
-      argValues: site.argValues,
-      issues: site.issues,
-    });
   }
 
   return {
     ok: true,
     summary: {
       fn,
-      analysis,
-      expr: analysis.result.expr,
-      rads: analysis.radSites
-        .map((rad) => rad.measure)
-        .filter((measure) => scalarExprType(measure) === "int"),
-      hasGas: fn.body.some((stmt) => stmt.tag === "gas"),
-      helperRecCalls,
+      analysis: {
+        ...analysis,
+        result,
+      },
       structDefs,
-      recSites,
     },
   };
 }
 
-function alignRecursiveScalarSummary(
-  summary: RecursiveScalarFunctionSummary,
+function alignSymbolicSummary(
+  summary: SymbolicFunctionSummary,
   params: Param[],
-): RecursiveScalarFunctionSummary {
+): SymbolicFunctionSummary {
   const callSigs = new Map(summary.analysis.callSigs);
   const substitution = new Map<string, SymValue>();
   const paramValues = new Map<string, SymValue>();
@@ -290,7 +259,6 @@ function alignRecursiveScalarSummary(
     paramValues.set(aligned.name, value);
   }
 
-  const alignedResult = { kind: "scalar" as const, expr: substituteSharedScalar(summary.expr, substitution) };
   return {
     ...summary,
     fn: {
@@ -300,29 +268,73 @@ function alignRecursiveScalarSummary(
     analysis: {
       ...summary.analysis,
       paramValues,
-      result: alignedResult,
+      radSites: summary.analysis.radSites.map((rad) => ({
+        ...rad,
+        measure: substituteSharedScalar(rad.measure, substitution),
+        rendered: renderSharedScalarExpr(substituteSharedScalar(rad.measure, substitution)),
+      })),
+      recSites: summary.analysis.recSites.map((site) => {
+        const currentRes = site.currentRes === undefined || site.currentRes === null
+          ? site.currentRes
+          : substituteValue(site.currentRes, substitution);
+        return {
+          ...site,
+          argValues: new Map(
+            [...site.argValues.entries()].map(([index, value]) => [index, substituteValue(value, substitution)]),
+          ),
+          ...(currentRes === undefined ? {} : { currentRes }),
+        };
+      }),
+      result: substituteValue(summary.analysis.result, substitution),
       callSigs,
     },
-    expr: alignedResult.expr,
-    rads: summary.rads.map((rad) => substituteSharedScalar(rad, substitution)),
-    recSites: summary.recSites.map((site) => ({
-      ...site,
-      currentRes: substituteSharedScalar(site.currentRes, substitution),
-      argValues: new Map(
-        [...site.argValues.entries()].map(([index, value]) => [index, substituteValue(value, substitution)]),
-      ),
-    })),
   };
 }
 
-function proveRecursiveScalarSummaryEquivalence(
+function defaultSymbolicResultForType(
+  type: Type,
+  structDefs: Map<string, Array<{ name: string; type: Type }>>,
+): SymValue | null {
+  if (type.tag === "int") {
+    return normalizeValueForType({ kind: "scalar", expr: { tag: "int_lit", value: 0 } }, type);
+  }
+  if (type.tag === "float") {
+    return normalizeValueForType({ kind: "scalar", expr: { tag: "float_lit", value: 0 } }, type);
+  }
+  if (type.tag === "void") {
+    return { kind: "void", type };
+  }
+  if (type.tag === "named") {
+    const fields = structDefs.get(type.name);
+    if (!fields) {
+      return null;
+    }
+    const values = fields.map((field) => defaultSymbolicResultForType(field.type, structDefs));
+    if (values.some((value) => value === null)) {
+      return null;
+    }
+    return {
+      kind: "struct",
+      typeName: type.name,
+      fields: fields.map((field, index) => ({
+        name: field.name,
+        type: field.type,
+        value: values[index]!,
+      })),
+    };
+  }
+  return null;
+}
+
+function proveRecursiveSummaryEquivalence(
   fnName: string,
   baselineProgram: IRProgram,
   refinedProgram: IRProgram,
-  baseline: RecursiveScalarFunctionSummary,
-  refined: RecursiveScalarFunctionSummary,
+  baseline: SymbolicFunctionSummary,
+  refined: SymbolicFunctionSummary,
+  solverOptions: Z3RunOptions,
 ): RefinementCheck {
-  if (baseline.hasGas || refined.hasGas) {
+  if (baseline.fn.body.some((stmt) => stmt.tag === "gas") || refined.fn.body.some((stmt) => stmt.tag === "gas")) {
     return {
       ok: false,
       code: "REF_UNPROVEN",
@@ -330,30 +342,34 @@ function proveRecursiveScalarSummaryEquivalence(
     };
   }
 
-  const candidateMeasures = uniqueScalarMeasures([...baseline.rads, ...refined.rads]);
+  const candidateMeasures = uniqueScalarMeasures([
+    ...baseline.analysis.radSites.map((rad) => rad.measure),
+    ...refined.analysis.radSites.map((rad) => rad.measure),
+  ]);
   if (candidateMeasures.length === 0) {
     return {
       ok: false,
       code: "REF_UNPROVEN",
-      message: `ref '${fnName}' could not be proven equivalent: no shared scalar-int rad candidate was available for recursive refinement proof`,
+      message: `ref '${fnName}' could not be proven equivalent: no shared rad candidate was available for recursive refinement proof`,
     };
   }
 
   const reasons: string[] = [];
   for (const measure of candidateMeasures) {
-    const decrease = proveSharedRecursiveScalarMeasureDecreases(fnName, baseline, refined, measure);
+    const decrease = proveSharedRecursiveMeasureDecreases(fnName, baseline, refined, measure, solverOptions);
     if (!decrease.ok) {
       reasons.push(decrease.message);
       continue;
     }
 
-    const step = proveRecursiveScalarStepEquivalence(
+    const step = proveRecursiveStepEquivalence(
       fnName,
       baselineProgram,
       refinedProgram,
       baseline,
       refined,
       measure,
+      solverOptions,
     );
     if (step.ok || step.code === "REF_MISMATCH") {
       return step;
@@ -364,23 +380,24 @@ function proveRecursiveScalarSummaryEquivalence(
   return {
     ok: false,
     code: "REF_UNPROVEN",
-    message: `ref '${fnName}' could not be proven equivalent for recursive scalar-int bodies: ${uniqueStrings(reasons).join("; ")}`,
+    message: `ref '${fnName}' could not be proven equivalent for recursive bodies: ${uniqueStrings(reasons).join("; ")}`,
   };
 }
 
-function proveSharedRecursiveScalarMeasureDecreases(
+function proveSharedRecursiveMeasureDecreases(
   fnName: string,
-  baseline: RecursiveScalarFunctionSummary,
-  refined: RecursiveScalarFunctionSummary,
+  baseline: SymbolicFunctionSummary,
+  refined: SymbolicFunctionSummary,
   measure: ScalarExpr,
+  solverOptions: Z3RunOptions,
 ): { ok: true } | { ok: false; message: string } {
   const sites = [
-    ...baseline.recSites.map((site, index) => ({
+    ...baseline.analysis.recSites.map((site, index) => ({
       label: `baseline site ${index + 1}`,
       summary: baseline,
       site,
     })),
-    ...refined.recSites.map((site, index) => ({
+    ...refined.analysis.recSites.map((site, index) => ({
       label: `ref site ${index + 1}`,
       summary: refined,
       site,
@@ -396,18 +413,20 @@ function proveSharedRecursiveScalarMeasureDecreases(
       };
     }
 
-    const result = checkSat(query.query.baseLines);
+    const result = checkSat(query.query.baseLines, solverOptions);
     if (!result.ok) {
       return {
         ok: false,
-        message: `ref '${fnName}' could not invoke z3 while checking recursive rad '${renderSharedScalarExpr(measure)}': ${result.error}`,
+        message: result.timedOut
+          ? `ref '${fnName}' timed out while checking recursive rad '${renderSharedScalarExpr(measure)}': ${result.error}`
+          : `ref '${fnName}' could not invoke z3 while checking recursive rad '${renderSharedScalarExpr(measure)}': ${result.error}`,
       };
     }
     if (result.status === "unsat") {
       continue;
     }
     if (result.status === "sat") {
-      const witness = queryCounterexample(query.query);
+      const witness = queryCounterexample(query.query, solverOptions);
       return {
         ok: false,
         message: `rad '${renderSharedScalarExpr(measure)}' does not decrease at ${entry.label}${witness ? `: ${witness}` : ""}`,
@@ -423,8 +442,8 @@ function proveSharedRecursiveScalarMeasureDecreases(
 }
 
 function buildRecursiveMeasureQuery(
-  summary: RecursiveScalarFunctionSummary,
-  site: RecursiveScalarSite,
+  summary: SymbolicFunctionSummary,
+  site: IrRecSite,
   measure: ScalarExpr,
 ): ReturnType<typeof buildMeasureCounterexampleQuery> {
   if (site.issues.length > 0) {
@@ -462,31 +481,26 @@ function buildRecursiveMeasureQuery(
   );
 }
 
-function proveRecursiveScalarStepEquivalence(
+function proveRecursiveStepEquivalence(
   fnName: string,
   baselineProgram: IRProgram,
   refinedProgram: IRProgram,
-  baseline: RecursiveScalarFunctionSummary,
-  refined: RecursiveScalarFunctionSummary,
+  baseline: SymbolicFunctionSummary,
+  refined: SymbolicFunctionSummary,
   measure: ScalarExpr,
+  solverOptions: Z3RunOptions,
 ): RefinementCheck {
+  const comparisonEnv = buildComparisonEnvFromParams(baseline.fn.params);
+  const baselineResult = normalizeValueForComparison(baseline.analysis.result, comparisonEnv);
+  const refinedResult = normalizeValueForComparison(refined.analysis.result, comparisonEnv);
   const lines = buildJplScalarPrelude();
+  const smtState = createSmtEncodingState();
+  const smtOverrides: EmitOverrides = { smt: smtState };
 
   const callSigs = new Map([...baseline.analysis.callSigs, ...refined.analysis.callSigs]);
-  for (const [name, sig] of callSigs) {
-    const domain = sig.args.map((arg) => (arg === "int" ? "Int" : "Real")).join(" ");
-    const sort = sig.ret === "int" ? "Int" : "Real";
-    lines.push(`(declare-fun ${sanitize(name)} (${domain}) ${sort})`);
-  }
-
-  const placeholderNames = new Set([
-    ...baseline.recSites.map((site) => site.resultSymbol),
-    ...refined.recSites.map((site) => site.resultSymbol),
-  ]);
-
   const vars = new Map<string, "int" | "float">();
-  collectValueVars({ kind: "scalar", expr: baseline.expr }, vars);
-  collectValueVars({ kind: "scalar", expr: refined.expr }, vars);
+  collectValueVars(baselineResult, vars);
+  collectValueVars(refinedResult, vars);
   collectValueVars({ kind: "scalar", expr: measure }, vars);
   for (const value of baseline.analysis.paramValues.values()) {
     collectValueVars(value, vars);
@@ -494,76 +508,83 @@ function proveRecursiveScalarStepEquivalence(
   for (const value of refined.analysis.paramValues.values()) {
     collectValueVars(value, vars);
   }
-  for (const site of [...baseline.recSites, ...refined.recSites]) {
-    collectValueVars({ kind: "scalar", expr: site.currentRes }, vars);
+  for (const site of [...baseline.analysis.recSites, ...refined.analysis.recSites]) {
+    if (site.currentRes) {
+      collectValueVars(site.currentRes, vars);
+    }
     for (const value of site.argValues.values()) {
       collectValueVars(value, vars);
     }
   }
-  for (const name of placeholderNames) {
-    vars.delete(name);
-  }
 
   for (const [name, tag] of vars) {
     lines.push(`(declare-const ${sanitize(name)} ${tag === "int" ? "Int" : "Real"})`);
-    if (tag === "int") {
+    const paramType = baseline.fn.params.find((param) => param.name === name)?.type
+      ?? refined.fn.params.find((param) => param.name === name)?.type;
+    if (paramType) {
+      appendScalarTypeConstraints(lines, name, paramType);
+    } else if (tag === "int") {
       lines.push(`(assert (<= ${INT32_MIN} ${sanitize(name)}))`);
       lines.push(`(assert (<= ${sanitize(name)} ${INT32_MAX}))`);
     }
   }
 
-  const hypotheses = new Map<string, string>();
-  let hypothesisIndex = 0;
-  for (const key of collectRecursivePatternKeys(baseline, refined)) {
-    const symbol = `jplmm_h_${hypothesisIndex}`;
-    hypothesisIndex += 1;
-    hypotheses.set(key, symbol);
-    lines.push(`(declare-const ${symbol} Int)`);
-    lines.push(`(assert (<= ${INT32_MIN} ${symbol}))`);
-    lines.push(`(assert (<= ${symbol} ${INT32_MAX}))`);
+  const hypotheses = buildRecursiveHypotheses([baseline, refined], callSigs, solverOptions);
+
+  for (const [name, sig] of callSigs) {
+    const domain = sig.args.map((arg) => (arg === "int" ? "Int" : "Real")).join(" ");
+    const sort = sig.ret === "int" ? "Int" : "Real";
+    lines.push(`(declare-fun ${sanitize(name)} (${domain}) ${sort})`);
   }
 
-  const baselineBindings = buildRecursiveScalarBindings(baseline, hypotheses);
-  if (!baselineBindings.ok) {
+  const overridesResult = buildRecursiveEmitOverrides([baseline, refined], hypotheses, smtOverrides);
+  if (!overridesResult.ok) {
     return {
       ok: false,
       code: "REF_UNPROVEN",
-      message: `ref '${fnName}' could not be proven equivalent: baseline: ${baselineBindings.reason}`,
-    };
-  }
-  const refinedBindings = buildRecursiveScalarBindings(refined, hypotheses);
-  if (!refinedBindings.ok) {
-    return {
-      ok: false,
-      code: "REF_UNPROVEN",
-      message: `ref '${fnName}' could not be proven equivalent: ref: ${refinedBindings.reason}`,
+      message: `ref '${fnName}' could not be proven equivalent: ${overridesResult.reason}`,
     };
   }
 
-  lines.push(
-    `(assert (not (= ${emitRecursiveScalarExpr(baseline.expr, baselineBindings.bindings)} ${emitRecursiveScalarExpr(refined.expr, refinedBindings.bindings)})))`,
+  const equality = emitValueEquality(
+    baselineResult,
+    refinedResult,
+    baseline.fn.retType,
+    overridesResult.overrides,
   );
+  if (!equality) {
+    return {
+      ok: false,
+      code: "REF_UNPROVEN",
+      message: `ref '${fnName}' could not be proven equivalent: recursive symbolic equality could not encode return type '${baseline.fn.retType.tag}'`,
+    };
+  }
 
-  const result = checkSat(lines);
+  appendSmtEncodingState(lines, smtState);
+  lines.push(`(assert (not ${equality}))`);
+
+  const result = checkSat(lines, solverOptions);
   if (!result.ok) {
     return {
       ok: false,
       code: "REF_UNPROVEN",
-      message: `ref '${fnName}' could not invoke z3 for recursive refinement proof: ${result.error}`,
+      message: result.timedOut
+        ? `ref '${fnName}' timed out during recursive refinement proof: ${result.error}`
+        : `ref '${fnName}' could not invoke z3 for recursive refinement proof: ${result.error}`,
     };
   }
   if (result.status === "unsat") {
     return {
       ok: true,
-      method: "scalar_int_recursive_induction",
-      detail: `proved recursive scalar-int equivalence by induction on rad '${renderSharedScalarExpr(measure)}'`,
+      method: "symbolic_recursive_induction",
+      detail: `proved recursive symbolic equivalence by induction on rad '${renderSharedScalarExpr(measure)}'`,
       equivalence: `shared rad '${renderSharedScalarExpr(measure)}' closes all recursive sites and aligns the inductive step`,
     };
   }
   if (result.status === "sat") {
     if (baseline.fn.params.every((param) => param.type.tag === "int")) {
-      const values = queryIntValues(lines, baseline.fn.params.map((param) => param.name));
-      const runtimeCounterexample = values
+      const values = runtimeIntCounterexampleInputs(lines, baseline.fn.params, solverOptions);
+      const runtimeCounterexample = values && canTryRuntimeRecursiveCounterexample(baseline, values)
         ? tryRuntimeRecursiveCounterexample(
             fnName,
             baselineProgram,
@@ -579,9 +600,7 @@ function proveRecursiveScalarStepEquivalence(
           message: `ref '${fnName}' is not equivalent: ${runtimeCounterexample}`,
         };
       }
-      const witness = values
-        ? formatIntAssignments(baseline.fn.params.map((param) => param.name), values)
-        : queryIntCounterexample(lines, baseline.fn.params.map((param) => param.name));
+      const witness = buildSymbolicCounterexample(lines, baseline.fn.params, solverOptions);
       return {
         ok: false,
         code: "REF_UNPROVEN",
@@ -591,7 +610,7 @@ function proveRecursiveScalarStepEquivalence(
     return {
       ok: false,
       code: "REF_UNPROVEN",
-      message: `ref '${fnName}' did not admit an inductive proof for rad '${renderSharedScalarExpr(measure)}'`,
+      message: `ref '${fnName}' did not admit a symbolic inductive proof for rad '${renderSharedScalarExpr(measure)}'`,
     };
   }
   return {
@@ -601,54 +620,7 @@ function proveRecursiveScalarStepEquivalence(
   };
 }
 
-function buildRecursiveScalarBindings(
-  summary: RecursiveScalarFunctionSummary,
-  hypotheses: Map<string, string>,
-): { ok: true; bindings: Map<string, string> } | { ok: false; reason: string } {
-  const sites = new Map(summary.recSites.map((site) => [site.resultSymbol, site] as const));
-  const cache = new Map<string, string>();
-  const active = new Set<string>();
-
-  const renderSite = (symbol: string): string | null => {
-    if (cache.has(symbol)) {
-      return cache.get(symbol)!;
-    }
-    if (active.has(symbol)) {
-      return null;
-    }
-    const site = sites.get(symbol);
-    if (!site) {
-      return null;
-    }
-    const collapse = emitRecursiveCollapse(summary, site);
-    if (!collapse) {
-      return null;
-    }
-    const hypothesis = hypotheses.get(recursivePatternKey(summary.fn.name, site.argValues));
-    if (!hypothesis) {
-      return null;
-    }
-    active.add(symbol);
-    const currentRes = emitRecursiveScalarExpr(site.currentRes, cache, renderSite);
-    active.delete(symbol);
-    const rendered = `(ite ${collapse} ${currentRes} ${hypothesis})`;
-    cache.set(symbol, rendered);
-    return rendered;
-  };
-
-  for (const site of summary.recSites) {
-    if (!renderSite(site.resultSymbol)) {
-      return {
-        ok: false,
-        reason: `could not build recursive hypothesis for site ${site.stmtIndex + 1}`,
-      };
-    }
-  }
-
-  return { ok: true, bindings: cache };
-}
-
-function emitRecursiveCollapse(summary: RecursiveScalarFunctionSummary, site: RecursiveScalarSite): string | null {
+function emitRecursiveCollapse(summary: SymbolicFunctionSummary, site: IrRecSite, overrides: EmitOverrides = {}): string | null {
   const clauses: string[] = [];
   for (let i = 0; i < summary.fn.params.length; i += 1) {
     const param = summary.fn.params[i]!;
@@ -657,7 +629,7 @@ function emitRecursiveCollapse(summary: RecursiveScalarFunctionSummary, site: Re
     if (!current || !next) {
       return null;
     }
-    const equality = emitValueEquality(current, next, param.type);
+    const equality = emitValueEquality(current, next, param.type, overrides);
     if (!equality) {
       return null;
     }
@@ -667,39 +639,6 @@ function emitRecursiveCollapse(summary: RecursiveScalarFunctionSummary, site: Re
     return "true";
   }
   return clauses.length === 1 ? clauses[0]! : `(and ${clauses.join(" ")})`;
-}
-
-function emitRecursiveScalarExpr(
-  expr: ScalarExpr,
-  bindings: Map<string, string>,
-  resolver: ((symbol: string) => string | null) | null = null,
-): string {
-  return emitScalarWithOverrides(expr, {
-    onVar: (variable) => {
-      const bound = bindings.get(variable.name) ?? resolver?.(variable.name) ?? null;
-      return bound;
-    },
-  });
-}
-
-function collectRecursivePatternKeys(
-  baseline: RecursiveScalarFunctionSummary,
-  refined: RecursiveScalarFunctionSummary,
-): string[] {
-  return uniqueStrings([
-    ...baseline.recSites.map((site) => recursivePatternKey(baseline.fn.name, site.argValues)),
-    ...refined.recSites.map((site) => recursivePatternKey(refined.fn.name, site.argValues)),
-  ]);
-}
-
-function recursivePatternKey(
-  relationName: string,
-  argValues: Map<number, SymValue>,
-): string {
-  const ordered = [...argValues.entries()]
-    .sort((left, right) => left[0] - right[0])
-    .map(([, value]) => renderValueExpr(value));
-  return `${relationName}::${ordered.join("||")}`;
 }
 
 function uniqueScalarMeasures(exprs: ScalarExpr[]): ScalarExpr[] {
@@ -715,282 +654,413 @@ function uniqueScalarMeasures(exprs: ScalarExpr[]): ScalarExpr[] {
   return out;
 }
 
-function collectDirectRecursiveHelperCalls(
-  fn: IRFunction,
-  availableFns: Map<string, IRFunction>,
-): string[] {
-  const found = new Set<string>();
+type CallOverrideHandler = (expr: Extract<ScalarExpr, { tag: "call" }>, overrides: EmitOverrides) => string | null;
 
-  const visit = (expr: IRExpr): void => {
-    switch (expr.tag) {
-      case "call": {
-        const callee = availableFns.get(expr.name);
-        if (callee && hasRec(callee)) {
-          found.add(expr.name);
-        }
-        for (const arg of expr.args) {
-          visit(arg);
-        }
-        return;
+function buildRecursiveEmitOverrides(
+  summaries: SymbolicFunctionSummary[],
+  hypotheses: Map<IrRecSite, SymValue>,
+  seedOverrides: EmitOverrides = {},
+): { ok: true; overrides: EmitOverrides } | { ok: false; reason: string } {
+  const handlers = new Map<string, CallOverrideHandler>();
+
+  for (const summary of summaries) {
+    for (const site of summary.analysis.recSites) {
+      if (site.issues.length > 0) {
+        return { ok: false, reason: site.issues.join("; ") };
       }
-      case "unop":
-      case "sat_neg":
-        visit(expr.tag === "unop" ? expr.operand : expr.operand);
-        return;
-      case "binop":
-      case "sat_add":
-      case "sat_sub":
-      case "sat_mul":
-      case "total_div":
-      case "total_mod":
-        visit(expr.left);
-        visit(expr.right);
-        return;
-      case "nan_to_zero":
-        visit(expr.value);
-        return;
-      case "index":
-        visit(expr.array);
-        for (const index of expr.indices) {
-          visit(index);
-        }
-        return;
-      case "field":
-        visit(expr.target);
-        return;
-      case "struct_cons":
-        for (const field of expr.fields) {
-          visit(field);
-        }
-        return;
-      case "array_cons":
-        for (const element of expr.elements) {
-          visit(element);
-        }
-        return;
-      case "array_expr":
-      case "sum_expr":
-        for (const binding of expr.bindings) {
-          visit(binding.expr);
-        }
-        visit(expr.body);
-        return;
-      case "rec":
-        for (const arg of expr.args) {
-          visit(arg);
-        }
-        return;
-      default:
-        return;
-    }
-  };
-
-  for (const stmt of fn.body) {
-    if (stmt.tag === "let" || stmt.tag === "ret" || stmt.tag === "rad") {
-      visit(stmt.expr);
-    }
-  }
-
-  return [...found];
-}
-
-function summarizeIntFunction(
-  fn: IRFunction,
-  availableFns: Map<string, IRFunction>,
-  summaries: Map<string, IntFunctionSummary>,
-): SummaryResult {
-  if (fn.retType.tag !== "int") {
-    return { ok: false, reason: "only scalar int refinements have an exact SMT checker today" };
-  }
-  if (fn.params.some((param) => param.type.tag !== "int")) {
-    return { ok: false, reason: "only scalar int parameters are supported by the exact SMT refinement checker" };
-  }
-  if (hasRec(fn)) {
-    return { ok: false, reason: "recursive refinements need a dedicated relational/CHC proof path and are not enabled yet" };
-  }
-
-  const env = new Map<string, IntRefineExpr>();
-  for (const param of fn.params) {
-    env.set(param.name, { tag: "var", name: param.name });
-  }
-
-  let currentRes: IntRefineExpr | null = null;
-  for (const stmt of fn.body) {
-    if (stmt.tag === "rad" || stmt.tag === "gas") {
-      continue;
-    }
-    if (stmt.tag === "let") {
-      const expr = summarizeIntExpr(stmt.expr, env, currentRes, availableFns, summaries);
-      if (!expr.ok) {
-        return expr;
+      if (!site.currentRes) {
+        return { ok: false, reason: `rec site ${site.stmtIndex + 1} has no current 'res' semantics to collapse against` };
       }
-      env.set(stmt.name, expr.expr);
-      continue;
-    }
-    if (stmt.tag === "ret") {
-      const expr = summarizeIntExpr(stmt.expr, env, currentRes, availableFns, summaries);
-      if (!expr.ok) {
-        return expr;
+      const hypothesis = hypotheses.get(site);
+      if (!hypothesis) {
+        return { ok: false, reason: `missing recursive hypothesis for site ${site.stmtIndex + 1}` };
       }
-      currentRes = expr.expr;
+      const collapse = emitRecursiveCollapse(summary, site, seedOverrides);
+      if (!collapse) {
+        return { ok: false, reason: `could not encode recursive collapse test for site ${site.stmtIndex + 1}` };
+      }
+      const problem = registerRecursiveValueBindings(site.resultValue, site.currentRes, hypothesis, collapse, handlers);
+      if (problem) {
+        return { ok: false, reason: problem };
+      }
     }
   }
 
-  return {
-    ok: true,
-    summary: {
-      paramNames: fn.params.map((param) => param.name),
-      expr: currentRes ?? { tag: "int_lit", value: 0 },
+  const cache = new Map<string, string>();
+  const active = new Set<string>();
+  const overrides: EmitOverrides = {
+    ...seedOverrides,
+    onCall: (expr) => {
+      const seeded = seedOverrides.onCall?.(expr);
+      if (seeded !== null && seeded !== undefined) {
+        return seeded;
+      }
+      const handler = handlers.get(expr.name);
+      if (!handler) {
+        return null;
+      }
+      const key = `${expr.name}(${expr.args.map((arg) => renderSharedScalarExpr(arg)).join(",")})`;
+      if (cache.has(key)) {
+        return cache.get(key)!;
+      }
+      if (active.has(key)) {
+        return null;
+      }
+      active.add(key);
+      const rendered = handler(expr, overrides);
+      active.delete(key);
+      if (rendered !== null) {
+        cache.set(key, rendered);
+      }
+      return rendered;
     },
   };
+  return { ok: true, overrides };
 }
 
-function summarizeIntExpr(
-  expr: IRExpr,
-  env: Map<string, IntRefineExpr>,
-  currentRes: IntRefineExpr | null,
-  availableFns: Map<string, IRFunction>,
-  summaries: Map<string, IntFunctionSummary>,
-): { ok: true; expr: IntRefineExpr } | { ok: false; reason: string } {
-  switch (expr.tag) {
-    case "int_lit":
-      return { ok: true, expr: { tag: "int_lit", value: expr.value } };
-    case "var": {
-      const value = env.get(expr.name);
-      if (!value) {
-        return { ok: false, reason: `free variable '${expr.name}' is not supported in refinement summaries` };
-      }
-      return { ok: true, expr: value };
-    }
-    case "res":
-      if (!currentRes) {
-        return { ok: false, reason: "res was not available while building the refinement summary" };
-      }
-      return { ok: true, expr: currentRes };
-    case "sat_add":
-    case "sat_sub":
-    case "sat_mul":
-    case "total_div":
-    case "total_mod": {
-      const left = summarizeIntExpr(expr.left, env, currentRes, availableFns, summaries);
-      if (!left.ok) {
-        return left;
-      }
-      const right = summarizeIntExpr(expr.right, env, currentRes, availableFns, summaries);
-      if (!right.ok) {
-        return right;
-      }
-      return {
-        ok: true,
-        expr: {
-          tag: expr.tag,
-          left: left.expr,
-          right: right.expr,
-        },
-      };
-    }
-    case "sat_neg": {
-      const operand = summarizeIntExpr(expr.operand, env, currentRes, availableFns, summaries);
-      if (!operand.ok) {
-        return operand;
-      }
-      return { ok: true, expr: { tag: "sat_neg", operand: operand.expr } };
-    }
-    case "call": {
-      const args: IntRefineExpr[] = [];
-      for (const arg of expr.args) {
-        const summarized = summarizeIntExpr(arg, env, currentRes, availableFns, summaries);
-        if (!summarized.ok) {
-          return summarized;
-        }
-        args.push(summarized.expr);
-      }
+type RecursiveSiteEntry = {
+  summary: SymbolicFunctionSummary;
+  site: IrRecSite;
+};
 
-      if (isSupportedIntBuiltin(expr.name, args.length)) {
-        return { ok: true, expr: { tag: "call", name: expr.name, args, interpreted: true } };
-      }
+function buildRecursiveHypotheses(
+  summaries: SymbolicFunctionSummary[],
+  callSigs: Map<string, { args: ScalarTag[]; ret: ScalarTag }>,
+  solverOptions: Z3RunOptions,
+): Map<IrRecSite, SymValue> {
+  const entries: RecursiveSiteEntry[] = summaries.flatMap((summary) =>
+    summary.analysis.recSites.map((site) => ({ summary, site })));
+  const classes: Array<{ representative: RecursiveSiteEntry; hypothesis: SymValue }> = [];
+  const hypotheses = new Map<IrRecSite, SymValue>();
 
-      const summary = summaries.get(expr.name);
-      if (summary) {
-        return {
-          ok: true,
-          expr: substituteIntExpr(
-            summary.expr,
-            new Map(summary.paramNames.map((name, index) => [name, args[index]!] as const)),
-          ),
-        };
+  for (const entry of entries) {
+    let hypothesis: SymValue | null = null;
+    for (const group of classes) {
+      if (recursiveArgTuplesEquivalent(entry, group.representative, callSigs, solverOptions)) {
+        hypothesis = group.hypothesis;
+        break;
       }
-
-      const callee = availableFns.get(expr.name);
-      if (!callee) {
-        return { ok: false, reason: `call to unknown function '${expr.name}' cannot be summarized` };
-      }
-      if (callee.retType.tag !== "int" || callee.params.some((param) => param.type.tag !== "int")) {
-        return { ok: false, reason: `call to '${expr.name}' leaves the scalar-int refinement subset` };
-      }
-      return { ok: true, expr: { tag: "call", name: expr.name, args, interpreted: false } };
     }
-    default:
-      return { ok: false, reason: `IR node '${expr.tag}' leaves the exact scalar-int refinement subset` };
+    if (!hypothesis) {
+      hypothesis = symbolizeAbstractValue(
+        entry.summary.fn.retType,
+        `jplmm_h_${classes.length}`,
+        [],
+        callSigs,
+        entry.summary.structDefs,
+      );
+      classes.push({ representative: entry, hypothesis });
+    }
+    hypotheses.set(entry.site, hypothesis);
   }
+
+  return hypotheses;
 }
 
-function proveIntSummaryEquivalence(
-  fnName: string,
-  baseline: IntFunctionSummary,
-  refined: IntFunctionSummary,
-): RefinementCheck {
-  const alignedRefinedExpr = substituteIntExpr(
-    refined.expr,
-    new Map(
-      refined.paramNames.map((name, index) => [
-        name,
-        { tag: "var", name: baseline.paramNames[index] ?? name } satisfies IntRefineExpr,
-      ]),
-    ),
+function recursiveArgTuplesEquivalent(
+  left: RecursiveSiteEntry,
+  right: RecursiveSiteEntry,
+  callSigs: Map<string, { args: ScalarTag[]; ret: ScalarTag }>,
+  solverOptions: Z3RunOptions,
+): boolean {
+  if (left.summary.fn.params.length !== right.summary.fn.params.length) {
+    return false;
+  }
+
+  const smtState = createSmtEncodingState();
+  const smtOverrides: EmitOverrides = { smt: smtState };
+  const clauses: string[] = [];
+  for (let i = 0; i < left.summary.fn.params.length; i += 1) {
+    const leftArg = left.site.argValues.get(i);
+    const rightArg = right.site.argValues.get(i);
+    const paramType = left.summary.fn.params[i]!.type;
+    if (!leftArg || !rightArg) {
+      return false;
+    }
+    const equality = emitValueEquality(leftArg, rightArg, paramType, smtOverrides);
+    if (!equality) {
+      return false;
+    }
+    clauses.push(equality);
+  }
+
+  if (clauses.length === 0) {
+    return true;
+  }
+
+  const lines = buildJplScalarPrelude();
+  for (const [name, sig] of callSigs) {
+    const domain = sig.args.map((arg) => (arg === "int" ? "Int" : "Real")).join(" ");
+    const sort = sig.ret === "int" ? "Int" : "Real";
+    lines.push(`(declare-fun ${sanitize(name)} (${domain}) ${sort})`);
+  }
+
+  const vars = new Map<string, "int" | "float">();
+  for (const value of left.site.argValues.values()) {
+    collectValueVars(value, vars);
+  }
+  for (const value of right.site.argValues.values()) {
+    collectValueVars(value, vars);
+  }
+
+  for (const [name, tag] of vars) {
+    lines.push(`(declare-const ${sanitize(name)} ${tag === "int" ? "Int" : "Real"})`);
+    const paramType = left.summary.fn.params.find((param) => param.name === name)?.type
+      ?? right.summary.fn.params.find((param) => param.name === name)?.type;
+    if (paramType) {
+      appendScalarTypeConstraints(lines, name, paramType);
+    } else if (tag === "int") {
+      lines.push(`(assert (<= ${INT32_MIN} ${sanitize(name)}))`);
+      lines.push(`(assert (<= ${sanitize(name)} ${INT32_MAX}))`);
+    }
+  }
+
+  appendSmtEncodingState(lines, smtState);
+  const conjunction = clauses.length === 1 ? clauses[0]! : `(and ${clauses.join(" ")})`;
+  lines.push(`(assert (not ${conjunction}))`);
+
+  const result = checkSat(lines, solverOptions);
+  return result.ok && result.status === "unsat";
+}
+
+function registerRecursiveValueBindings(
+  placeholder: SymValue,
+  current: SymValue,
+  hypothesis: SymValue,
+  collapse: string,
+  handlers: Map<string, CallOverrideHandler>,
+): string | null {
+  if (placeholder.kind === "scalar") {
+    if (placeholder.expr.tag !== "call" || placeholder.expr.interpreted || current.kind !== "scalar" || hypothesis.kind !== "scalar") {
+      return "recursive scalar placeholder does not lower to a symbolic call";
+    }
+    handlers.set(placeholder.expr.name, (_expr, overrides) =>
+      `(ite ${collapse} ${emitScalarWithOverrides(current.expr, overrides)} ${emitScalarWithOverrides(hypothesis.expr, overrides)})`);
+    return null;
+  }
+  if (placeholder.kind === "array") {
+    if (current.kind !== "array" || hypothesis.kind !== "array") {
+      return "recursive array placeholder does not align with array-valued current/hypothesis results";
+    }
+    return registerRecursiveArrayBindings(placeholder.array, current.array, hypothesis.array, collapse, handlers);
+  }
+  if (placeholder.kind === "struct") {
+    if (current.kind !== "struct" || hypothesis.kind !== "struct" || current.typeName !== placeholder.typeName || hypothesis.typeName !== placeholder.typeName) {
+      return "recursive struct placeholder does not align with current/hypothesis struct results";
+    }
+    for (let i = 0; i < placeholder.fields.length; i += 1) {
+      const field = placeholder.fields[i]!;
+      const currentField = current.fields[i];
+      const hypothesisField = hypothesis.fields[i];
+      if (!currentField || !hypothesisField || currentField.name !== field.name || hypothesisField.name !== field.name) {
+        return `recursive struct field '${field.name}' could not be aligned`;
+      }
+      const nested = registerRecursiveValueBindings(field.value, currentField.value, hypothesisField.value, collapse, handlers);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
+  if (placeholder.kind === "void") {
+    return current.kind === "void" && hypothesis.kind === "void"
+      ? null
+      : "recursive void placeholder does not align with current/hypothesis values";
+  }
+  return "opaque recursive results are not supported by the symbolic induction prover";
+}
+
+function registerRecursiveArrayBindings(
+  placeholder: SymArray,
+  current: SymArray,
+  hypothesis: SymArray,
+  collapse: string,
+  handlers: Map<string, CallOverrideHandler>,
+): string | null {
+  if (placeholder.tag !== "abstract") {
+    return "recursive array placeholder does not lower to abstract closure semantics";
+  }
+  const currentDims = arrayDims(current);
+  const hypothesisDims = arrayDims(hypothesis);
+  if (!currentDims || !hypothesisDims || currentDims.length !== placeholder.dims.length || hypothesisDims.length !== placeholder.dims.length) {
+    return "recursive array placeholder dimensions could not be aligned";
+  }
+  const placeholderType = placeholder.arrayType;
+  if (placeholderType.tag !== "array") {
+    return "recursive array placeholder lost its array type during symbolic lowering";
+  }
+  for (let i = 0; i < placeholder.dims.length; i += 1) {
+    const dimCall = placeholder.dims[i]!;
+    if (dimCall.tag !== "call" || dimCall.interpreted) {
+      return "recursive array dimension placeholder is not abstract";
+    }
+    const currentDim = currentDims[i]!;
+    const hypothesisDim = hypothesisDims[i]!;
+    handlers.set(dimCall.name, (_expr, overrides) =>
+      `(ite ${collapse} ${emitScalarWithOverrides(currentDim, overrides)} ${emitScalarWithOverrides(hypothesisDim, overrides)})`);
+  }
+  return registerRecursiveArrayLeafBindings(
+    placeholder,
+    current,
+    hypothesis,
+    collapse,
+    placeholder.leafModel,
+    placeholderType.element,
+    [],
+    handlers,
   );
-  const vars = collectSummaryVars(baseline.paramNames, baseline.expr, alignedRefinedExpr);
-  const lines = buildIntPrelude();
+}
 
-  const calls = new Map<string, number>();
-  collectCalls(baseline.expr, calls);
-  collectCalls(alignedRefinedExpr, calls);
-  for (const [name, arity] of calls) {
-    lines.push(`(declare-fun ${sanitize(name)} (${new Array(arity).fill("Int").join(" ")}) Int)`);
+function registerRecursiveArrayLeafBindings(
+  placeholder: Extract<SymArray, { tag: "abstract" }>,
+  current: SymArray,
+  hypothesis: SymArray,
+  collapse: string,
+  model: Extract<SymArray, { tag: "abstract" }>["leafModel"],
+  rootType: Type,
+  path: string[],
+  handlers: Map<string, CallOverrideHandler>,
+): string | null {
+  if (model.kind === "scalar") {
+    handlers.set(model.readName, (expr, overrides) => {
+      const indices = expr.args.slice(placeholder.args.length);
+      const currentRead = projectValuePath(readSymbolicArray(current, indices, rootType, -1, -1), path);
+      const hypothesisRead = projectValuePath(readSymbolicArray(hypothesis, indices, rootType, -1, -1), path);
+      if (currentRead?.kind !== "scalar" || hypothesisRead?.kind !== "scalar") {
+        return null;
+      }
+      return `(ite ${collapse} ${emitScalarWithOverrides(currentRead.expr, overrides)} ${emitScalarWithOverrides(hypothesisRead.expr, overrides)})`;
+    });
+    return null;
+  }
+  if (model.kind === "struct") {
+    for (const field of model.fields) {
+      const nested = registerRecursiveArrayLeafBindings(
+        placeholder,
+        current,
+        hypothesis,
+        collapse,
+        field.model,
+        rootType,
+        [...path, field.name],
+        handlers,
+      );
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
+  return "opaque array leaves are not supported by the symbolic induction prover";
+}
+
+function projectValuePath(value: SymValue, path: string[]): SymValue | null {
+  let current: SymValue | null = value;
+  for (const fieldName of path) {
+    if (!current || current.kind !== "struct") {
+      return null;
+    }
+    let next: SymValue | null = null;
+    for (const candidate of current.fields) {
+      if (candidate.name === fieldName) {
+        next = candidate.value;
+        break;
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+function proveSymbolicSummaryEquivalence(
+  fnName: string,
+  baseline: SymbolicFunctionSummary,
+  refined: SymbolicFunctionSummary,
+  solverOptions: Z3RunOptions,
+): RefinementCheck {
+  const comparisonEnv = buildComparisonEnvFromParams(baseline.fn.params);
+  const baselineResult = normalizeValueForComparison(baseline.analysis.result, comparisonEnv);
+  const refinedResult = normalizeValueForComparison(refined.analysis.result, comparisonEnv);
+  const baselineSexpr = emitValueSexpr(baselineResult);
+  const refinedSexpr = emitValueSexpr(refinedResult);
+  if (baselineSexpr === refinedSexpr) {
+    return {
+      ok: true,
+      method: "symbolic_value_alpha",
+      detail: "shared symbolic values are syntactically identical after helper specialization",
+      equivalence: `${renderValueExpr(baselineResult)} == ${renderValueExpr(refinedResult)}`,
+    };
   }
 
-  for (const name of vars) {
-    lines.push(`(declare-const ${sanitize(name)} Int)`);
-    lines.push(`(assert (<= ${INT32_MIN} ${sanitize(name)}))`);
-    lines.push(`(assert (<= ${sanitize(name)} ${INT32_MAX}))`);
+  const smtState = createSmtEncodingState();
+  const smtOverrides: EmitOverrides = { smt: smtState };
+  const equality = emitValueEquality(
+    baselineResult,
+    refinedResult,
+    baseline.fn.retType,
+    smtOverrides,
+  );
+  if (!equality) {
+    return {
+      ok: false,
+      code: "REF_UNPROVEN",
+      message: `ref '${fnName}' could not be proven equivalent: shared symbolic equality could not encode return type '${baseline.fn.retType.tag}'`,
+    };
   }
 
-  lines.push(`(assert (not (= ${emitIntExpr(baseline.expr)} ${emitIntExpr(alignedRefinedExpr)})))`);
+  const lines = buildJplScalarPrelude();
+  const callSigs = new Map([...baseline.analysis.callSigs, ...refined.analysis.callSigs]);
+  for (const [name, sig] of callSigs) {
+    const domain = sig.args.map((arg) => (arg === "int" ? "Int" : "Real")).join(" ");
+    const sort = sig.ret === "int" ? "Int" : "Real";
+    lines.push(`(declare-fun ${sanitize(name)} (${domain}) ${sort})`);
+  }
 
-  const result = checkSat(lines);
+  const vars = new Map<string, "int" | "float">();
+  collectValueVars(baselineResult, vars);
+  collectValueVars(refinedResult, vars);
+
+  for (const [name, tag] of vars) {
+    lines.push(`(declare-const ${sanitize(name)} ${tag === "int" ? "Int" : "Real"})`);
+    const paramType = baseline.fn.params.find((param) => param.name === name)?.type
+      ?? refined.fn.params.find((param) => param.name === name)?.type;
+    if (paramType) {
+      appendScalarTypeConstraints(lines, name, paramType);
+    } else if (tag === "int") {
+      lines.push(`(assert (<= ${INT32_MIN} ${sanitize(name)}))`);
+      lines.push(`(assert (<= ${sanitize(name)} ${INT32_MAX}))`);
+    }
+  }
+
+  appendSmtEncodingState(lines, smtState);
+  lines.push(`(assert (not ${equality}))`);
+
+  const result = checkSat(lines, solverOptions);
   if (!result.ok) {
     return {
       ok: false,
       code: "REF_UNPROVEN",
-      message: `ref '${fnName}' could not invoke z3: ${result.error}`,
+      message: result.timedOut
+        ? `ref '${fnName}' timed out during shared symbolic equivalence proof: ${result.error}`
+        : `ref '${fnName}' could not invoke z3: ${result.error}`,
     };
   }
   if (result.status === "unsat") {
     return {
       ok: true,
-      method: "scalar_int_smt",
-      detail: "proved scalar-int equivalence with Z3",
-      equivalence: `${renderIntExpr(baseline.expr)} == ${renderIntExpr(alignedRefinedExpr)}`,
+      method: "symbolic_value_smt",
+      detail: "proved shared symbolic value equivalence with Z3",
+      equivalence: `${renderValueExpr(baselineResult)} == ${renderValueExpr(refinedResult)}`,
     };
   }
   if (result.status === "sat") {
-    const counterexample = queryIntCounterexample(lines, vars);
+    const counterexample = buildSymbolicCounterexample(lines, baseline.fn.params, solverOptions);
     return {
       ok: false,
       code: "REF_MISMATCH",
       message: counterexample
         ? `ref '${fnName}' is not equivalent: ${counterexample}`
-        : `ref '${fnName}' is not equivalent: z3 found an integer counterexample`,
+        : `ref '${fnName}' is not equivalent: z3 found a counterexample in the shared symbolic model`,
     };
   }
   return {
@@ -1000,8 +1070,46 @@ function proveIntSummaryEquivalence(
   };
 }
 
+function buildSymbolicCounterexample(
+  lines: string[],
+  params: Param[],
+  solverOptions: Z3RunOptions,
+): string | null {
+  const querySymbols = params
+    .filter((param) => param.type.tag === "int" || param.type.tag === "float")
+    .map((param) => ({
+      symbol: sanitize(param.name),
+      label: param.name,
+    }));
+  if (querySymbols.length === 0) {
+    return null;
+  }
+  return queryCounterexample(
+    {
+      baseLines: lines,
+      querySymbols,
+    },
+    solverOptions,
+  );
+}
+
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function canTryRuntimeRecursiveCounterexample(
+  summary: SymbolicFunctionSummary,
+  values: Map<string, number>,
+): boolean {
+  if (summary.analysis.recSites.length !== 1) {
+    return false;
+  }
+  return summary.fn.params.every((param) => {
+    if (param.type.tag !== "int") {
+      return false;
+    }
+    return Math.abs(values.get(param.name) ?? 0) <= 256;
+  });
 }
 
 function tryRuntimeRecursiveCounterexample(
@@ -1015,9 +1123,17 @@ function tryRuntimeRecursiveCounterexample(
   const baselineValue = executeProgram(baselineProgram, fnName, args).value;
   const refinedValue = executeProgram(refinedProgram, fnName, args).value;
   if (!runtimeValueEquals(baselineValue, refinedValue)) {
-    return `${formatIntAssignments(paramNames, values) ?? "counterexample"}; baseline=${renderRuntimeValue(baselineValue)}, ref=${renderRuntimeValue(refinedValue)}`;
+    return `${formatModelAssignments(paramNames, values) ?? "counterexample"}; baseline=${renderRuntimeValue(baselineValue)}, ref=${renderRuntimeValue(refinedValue)}`;
   }
   return null;
+}
+
+function runtimeIntCounterexampleInputs(
+  lines: string[],
+  params: Param[],
+  solverOptions: Z3RunOptions,
+): Map<string, number> | null {
+  return queryIntModelValues(lines, params.map((param) => param.name), solverOptions);
 }
 
 function runtimeValueEquals(left: RuntimeValue, right: RuntimeValue): boolean {

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { Param, Type } from "@jplmm/ast";
+import { getArrayExtentNames, getScalarBounds, type Param, type Type } from "@jplmm/ast";
 import type { IRExpr, IRFunction, IRProgram, IRStmt, IRStructDef } from "@jplmm/ir";
 import type {
   AitkenImplementation,
@@ -473,7 +473,9 @@ function emitClosedFormFunction(
   }
 
   const exportClause = options.exportFunctions === true ? ` (export "${fn.name}")` : "";
+  const normalization = emitParamNormalizationPrelude(fn.params);
   const body = `
+${normalization ? `${normalization}\n` : ""}
 local.get $${param.name}
 i32.const 0
 i32.le_s
@@ -568,6 +570,14 @@ ${localDecls ? `${indent(localDecls, 1)}\n` : ""}${indent(lines.join("\n"), 1)}
 
 function emitStatements(ctx: EmitFunctionContext): string {
   const chunks: string[] = [];
+  const normalization = emitParamNormalizationPrelude(ctx.fn.params);
+  if (normalization) {
+    chunks.push(normalization);
+  }
+  const extents = emitParamExtentPrelude(ctx.fn.params);
+  if (extents) {
+    chunks.push(extents);
+  }
 
   if (ctx.aitken) {
     chunks.push(emitAitkenPrelude(ctx));
@@ -1597,7 +1607,7 @@ end`, 1));
 
 function emitRecArgStores(expr: Extract<IRExpr, { tag: "rec" }>, ctx: EmitFunctionContext): string {
   return expr.args
-    .map((arg, idx) => `${emitExpr(arg, ctx)}\nlocal.set $${recArgLocal(expr.id, idx)}`)
+    .map((arg, idx) => `${emitExpr(arg, ctx)}${emitScalarNormalizationOps(ctx.fn.params[idx]?.type).length > 0 ? `\n${emitScalarNormalizationOps(ctx.fn.params[idx]?.type).join("\n")}` : ""}\nlocal.set $${recArgLocal(expr.id, idx)}`)
     .join("\n");
 }
 
@@ -1646,12 +1656,72 @@ function emitParamDecls(ctx: EmitFunctionContext): string {
   return params.join(" ");
 }
 
+function emitParamNormalizationPrelude(params: Param[]): string {
+  return params
+    .flatMap((param) => {
+      const ops = emitScalarNormalizationOps(param.type);
+      if (ops.length === 0) {
+        return [];
+      }
+      return [`local.get $${param.name}`, ...ops, `local.set $${param.name}`];
+    })
+    .join("\n");
+}
+
+function emitScalarNormalizationOps(type: Type | undefined): string[] {
+  if (!type) {
+    return [];
+  }
+  if (type.tag === "int") {
+    const bounds = getScalarBounds(type);
+    if (!bounds) {
+      return [];
+    }
+    if (bounds.lo !== null && bounds.hi !== null) {
+      return [`i32.const ${Math.trunc(bounds.lo)}`, `i32.const ${Math.trunc(bounds.hi)}`, "call $jplmm_clamp_i32"];
+    }
+    if (bounds.lo !== null) {
+      return [`i32.const ${Math.trunc(bounds.lo)}`, "call $jplmm_max_i32"];
+    }
+    if (bounds.hi !== null) {
+      return [`i32.const ${Math.trunc(bounds.hi)}`, "call $jplmm_min_i32"];
+    }
+    return [];
+  }
+  if (type.tag === "float") {
+    const ops = ["call $jplmm_nan_to_zero_f32"];
+    const bounds = getScalarBounds(type);
+    if (!bounds) {
+      return ops;
+    }
+    if (bounds.lo !== null && bounds.hi !== null) {
+      ops.push(`f32.const ${Number.isFinite(bounds.lo) ? bounds.lo : 0}`);
+      ops.push(`f32.const ${Number.isFinite(bounds.hi) ? bounds.hi : 0}`);
+      ops.push("call $jplmm_clamp_f32");
+      return ops;
+    }
+    if (bounds.lo !== null) {
+      ops.push(`f32.const ${Number.isFinite(bounds.lo) ? bounds.lo : 0}`);
+      ops.push("call $jplmm_max_f32");
+      return ops;
+    }
+    if (bounds.hi !== null) {
+      ops.push(`f32.const ${Number.isFinite(bounds.hi) ? bounds.hi : 0}`);
+      ops.push("call $jplmm_min_f32");
+      return ops;
+    }
+    return ops;
+  }
+  return [];
+}
+
 function emitLutWrapperBody(fn: IRFunction, layout: LutLayout): string {
   const resultType = wasmType(fn.retType);
   const fallbackCall = `${fn.params.map((param) => `local.get $${param.name}`).join("\n")}
 call $${fn.name}__generic`;
 
-  return `${emitLutRangeCondition(fn, layout.impl)}
+  return `${emitParamNormalizationPrelude(fn.params)}
+${emitLutRangeCondition(fn, layout.impl)}
 if (result ${resultType})
 ${indent(emitLutFastPath(fn, layout), 1)}
 else
@@ -1969,10 +2039,39 @@ function collectLocalDecls(ctx: EmitFunctionContext): string {
     }
   }
 
+  for (const param of ctx.fn.params) {
+    for (const extentName of getArrayExtentNames(param.type) ?? []) {
+      if (extentName !== null) {
+        locals.set(extentName, "i32");
+      }
+    }
+  }
+
   return [...locals.entries()]
     .filter(([name]) => !ctx.fn.params.some((param) => param.name === name))
     .map(([name, type]) => `(local $${name} ${type})`)
     .join(" ");
+}
+
+function emitParamExtentPrelude(params: Param[]): string {
+  const lines: string[] = [];
+  for (const param of params) {
+    const extentNames = getArrayExtentNames(param.type);
+    if (!extentNames) {
+      continue;
+    }
+    for (let i = 0; i < extentNames.length; i += 1) {
+      const extentName = extentNames[i];
+      if (extentName === null) {
+        continue;
+      }
+      lines.push(`local.get $${param.name}`);
+      lines.push(`i32.const ${i}`);
+      lines.push("call $jplmm_array_dim");
+      lines.push(`local.set $${extentName}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function collectRecTemps(expr: IRExpr, locals: Map<string, string>): void {

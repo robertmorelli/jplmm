@@ -1,9 +1,7 @@
-import type { Cmd, FunctionKeyword, Program, Type } from "@jplmm/ast";
+import { renderType, sameType, type Cmd, type FunctionKeyword, type Program, type Type } from "@jplmm/ast";
 import {
   buildCanonicalProgram,
   checkFunctionRefinement,
-  computeFunctionSummary,
-  type IntFunctionSummary,
   renderIrFunction,
   type RefinementCheck,
   type RefinementMethod,
@@ -37,6 +35,10 @@ export type RefineResult = {
   refinements: RefinementReport[];
 };
 
+export type RefineOptions = {
+  proofTimeoutMs?: number;
+};
+
 type EffectiveFunction = {
   cmd: Cmd;
   fn: Extract<Cmd, { tag: "fn_def" }>;
@@ -44,12 +46,11 @@ type EffectiveFunction = {
   policyKeyword: Exclude<FunctionKeyword, "ref">;
 };
 
-export function refineProgram(program: Program, typeMap: Map<number, Type>): RefineResult {
+export function refineProgram(program: Program, typeMap: Map<number, Type>, options: RefineOptions = {}): RefineResult {
   const diagnostics: Diagnostic[] = [];
   const refinements: RefinementReport[] = [];
   const output: Array<Cmd | null> = [];
   const effective = new Map<string, EffectiveFunction>();
-  const summaries = new Map<string, IntFunctionSummary>();
 
   for (const cmd of program.commands) {
     const fn = unwrapTimedFnDef(cmd);
@@ -66,7 +67,6 @@ export function refineProgram(program: Program, typeMap: Map<number, Type>): Ref
         outputIndex: output.length - 1,
         policyKeyword: fn.keyword,
       });
-      refreshSummary(fn.name, output, typeMap, summaries);
       continue;
     }
 
@@ -110,7 +110,7 @@ export function refineProgram(program: Program, typeMap: Map<number, Type>): Ref
       baselineCommands,
       refinedCommands,
       typeMap,
-      summaries,
+      options.proofTimeoutMs === undefined ? {} : { timeoutMs: options.proofTimeoutMs },
     );
 
     if (!check.ok) {
@@ -131,7 +131,6 @@ export function refineProgram(program: Program, typeMap: Map<number, Type>): Ref
       outputIndex: output.length - 1,
       policyKeyword: current.policyKeyword,
     });
-    refreshSummary(fn.name, output, typeMap, summaries);
     refinements.push({
       fnName: fn.name,
       baselineKeyword: current.policyKeyword,
@@ -225,20 +224,6 @@ function optionalSpan(
   } as Partial<RefinementReport>;
 }
 
-function refreshSummary(
-  fnName: string,
-  output: Array<Cmd | null>,
-  typeMap: Map<number, Type>,
-  summaries: Map<string, IntFunctionSummary>,
-): void {
-  const summary = computeFunctionSummary(fnName, materializeCommands(output), typeMap, summaries);
-  if (summary) {
-    summaries.set(fnName, summary);
-    return;
-  }
-  summaries.delete(fnName);
-}
-
 function compareRefinementSignature(
   baseline: Extract<Cmd, { tag: "fn_def" }>,
   candidate: Extract<Cmd, { tag: "fn_def" }>,
@@ -248,11 +233,11 @@ function compareRefinementSignature(
   }
   for (let i = 0; i < baseline.params.length; i += 1) {
     if (!sameType(baseline.params[i]!.type, candidate.params[i]!.type)) {
-      return `ref '${candidate.name}' parameter ${i + 1} must keep type ${typeToString(baseline.params[i]!.type)}`;
+      return `ref '${candidate.name}' parameter ${i + 1} must keep type ${renderType(baseline.params[i]!.type)}`;
     }
   }
   if (!sameType(baseline.retType, candidate.retType)) {
-    return `ref '${candidate.name}' must keep return type ${typeToString(baseline.retType)}`;
+    return `ref '${candidate.name}' must keep return type ${renderType(baseline.retType)}`;
   }
   return null;
 }
@@ -300,41 +285,4 @@ function diagnosticForFn(
   code: string,
 ): Diagnostic {
   return error(message, fn.start ?? 0, fn.end ?? fn.start ?? 0, code);
-}
-
-function sameType(left: Type, right: Type): boolean {
-  if (left.tag !== right.tag) {
-    return false;
-  }
-  switch (left.tag) {
-    case "int":
-    case "float":
-    case "void":
-      return true;
-    case "named":
-      return left.name === (right as typeof left).name;
-    case "array":
-      return left.dims === (right as typeof left).dims && sameType(left.element, (right as typeof left).element);
-    default: {
-      const _never: never = left;
-      return _never;
-    }
-  }
-}
-
-function typeToString(type: Type): string {
-  switch (type.tag) {
-    case "int":
-    case "float":
-    case "void":
-      return type.tag;
-    case "named":
-      return type.name;
-    case "array":
-      return `${typeToString(type.element)}${"[]".repeat(type.dims)}`;
-    default: {
-      const _never: never = type;
-      return _never;
-    }
-  }
 }

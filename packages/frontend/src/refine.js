@@ -1,11 +1,11 @@
-import { buildCanonicalProgram, checkFunctionRefinement, computeFunctionSummary, renderIrFunction, } from "@jplmm/proof";
+import { renderType, sameType } from "@jplmm/ast";
+import { buildCanonicalProgram, checkFunctionRefinement, renderIrFunction, } from "@jplmm/proof";
 import { error } from "./errors";
-export function refineProgram(program, typeMap) {
+export function refineProgram(program, typeMap, options = {}) {
     const diagnostics = [];
     const refinements = [];
     const output = [];
     const effective = new Map();
-    const summaries = new Map();
     for (const cmd of program.commands) {
         const fn = unwrapTimedFnDef(cmd);
         if (!fn) {
@@ -20,7 +20,6 @@ export function refineProgram(program, typeMap) {
                 outputIndex: output.length - 1,
                 policyKeyword: fn.keyword,
             });
-            refreshSummary(fn.name, output, typeMap, summaries);
             continue;
         }
         const current = effective.get(fn.name);
@@ -55,7 +54,7 @@ export function refineProgram(program, typeMap) {
             });
             continue;
         }
-        const check = checkFunctionRefinement(fn.name, baselineCommands, refinedCommands, typeMap, summaries);
+        const check = checkFunctionRefinement(fn.name, baselineCommands, refinedCommands, typeMap, options.proofTimeoutMs === undefined ? {} : { timeoutMs: options.proofTimeoutMs });
         if (!check.ok) {
             diagnostics.push(diagnosticForFn(fn, check.message, check.code));
             refinements.push(reportFailedRefinement(current, fn, check, semantics));
@@ -73,7 +72,6 @@ export function refineProgram(program, typeMap) {
             outputIndex: output.length - 1,
             policyKeyword: current.policyKeyword,
         });
-        refreshSummary(fn.name, output, typeMap, summaries);
         refinements.push({
             fnName: fn.name,
             baselineKeyword: current.policyKeyword,
@@ -131,25 +129,17 @@ function optionalSpan(prefix, start, end) {
         ...(end !== undefined ? { [`${prefix}End`]: end } : {}),
     };
 }
-function refreshSummary(fnName, output, typeMap, summaries) {
-    const summary = computeFunctionSummary(fnName, materializeCommands(output), typeMap, summaries);
-    if (summary) {
-        summaries.set(fnName, summary);
-        return;
-    }
-    summaries.delete(fnName);
-}
 function compareRefinementSignature(baseline, candidate) {
     if (baseline.params.length !== candidate.params.length) {
         return `ref '${candidate.name}' must keep the same arity as '${baseline.name}'`;
     }
     for (let i = 0; i < baseline.params.length; i += 1) {
         if (!sameType(baseline.params[i].type, candidate.params[i].type)) {
-            return `ref '${candidate.name}' parameter ${i + 1} must keep type ${typeToString(baseline.params[i].type)}`;
+            return `ref '${candidate.name}' parameter ${i + 1} must keep type ${renderType(baseline.params[i].type)}`;
         }
     }
     if (!sameType(baseline.retType, candidate.retType)) {
-        return `ref '${candidate.name}' must keep return type ${typeToString(baseline.retType)}`;
+        return `ref '${candidate.name}' must keep return type ${renderType(baseline.retType)}`;
     }
     return null;
 }
@@ -183,40 +173,5 @@ function materializeCommands(output, replacements = new Map()) {
 }
 function diagnosticForFn(fn, message, code) {
     return error(message, fn.start ?? 0, fn.end ?? fn.start ?? 0, code);
-}
-function sameType(left, right) {
-    if (left.tag !== right.tag) {
-        return false;
-    }
-    switch (left.tag) {
-        case "int":
-        case "float":
-        case "void":
-            return true;
-        case "named":
-            return left.name === right.name;
-        case "array":
-            return left.dims === right.dims && sameType(left.element, right.element);
-        default: {
-            const _never = left;
-            return _never;
-        }
-    }
-}
-function typeToString(type) {
-    switch (type.tag) {
-        case "int":
-        case "float":
-        case "void":
-            return type.tag;
-        case "named":
-            return type.name;
-        case "array":
-            return `${typeToString(type.element)}${"[]".repeat(type.dims)}`;
-        default: {
-            const _never = type;
-            return _never;
-        }
-    }
 }
 //# sourceMappingURL=refine.js.map

@@ -13,19 +13,40 @@ export type FrontendResult = {
   refinements: RefinementReport[];
 };
 
-export function runFrontend(source: string): FrontendResult {
+export type FrontendOptions = {
+  proofTimeoutMs?: number;
+};
+
+const DEFAULT_PROOF_TIMEOUT_MS = 2000;
+
+export function runFrontend(source: string, options: FrontendOptions = {}): FrontendResult {
   const parsed = parseSource(source);
   const resolved = resolveProgram(parsed.program);
   const typed = typecheckProgram(resolved.program);
+  const proofTimeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
   const hasHardErrors = [...parsed.diagnostics, ...resolved.diagnostics, ...typed.diagnostics]
     .some((diagnostic) => diagnostic.severity === "error");
   const refined = hasHardErrors
     ? { program: typed.program, diagnostics: [] as Diagnostic[], refinements: [] as RefinementReport[] }
-    : refineProgram(typed.program, typed.typeMap);
+    : refineProgram(
+      typed.program,
+      typed.typeMap,
+      proofTimeoutMs === undefined ? {} : { proofTimeoutMs },
+    );
   return {
     program: refined.program,
     diagnostics: [...parsed.diagnostics, ...resolved.diagnostics, ...typed.diagnostics, ...refined.diagnostics],
     typeMap: typed.typeMap,
     refinements: refined.refinements,
   };
+}
+
+function resolveProofTimeoutMs(proofTimeoutMs: number | undefined): number | undefined {
+  if (proofTimeoutMs === undefined) {
+    return DEFAULT_PROOF_TIMEOUT_MS;
+  }
+  if (!Number.isFinite(proofTimeoutMs) || proofTimeoutMs <= 0) {
+    return DEFAULT_PROOF_TIMEOUT_MS;
+  }
+  return Math.min(2000, Math.max(1, Math.floor(proofTimeoutMs)));
 }

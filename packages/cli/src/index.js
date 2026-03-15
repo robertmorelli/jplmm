@@ -6,9 +6,11 @@ import { buildIR } from "@jplmm/ir";
 import { optimizeProgram } from "@jplmm/optimize";
 import { analyzeProgramMetrics, verifyProgram } from "@jplmm/verify";
 import { executeTopLevelProgram } from "./run";
-import { buildSemanticsDebugData, renderSemanticsDebugData } from "./semantics";
+import { buildCompilerSemantics, buildSemanticsDebugData, renderSemanticsDebugData } from "./semantics";
+const DEFAULT_CLI_PROOF_TIMEOUT_MS = 2000;
 export function runOnSource(source, mode, options = {}) {
-    const frontend = runFrontend(source);
+    const proofTimeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
+    const frontend = runFrontend(source, proofTimeoutMs === undefined ? {} : { proofTimeoutMs });
     const diagnostics = frontend.diagnostics.map((d) => `${d.severity.toUpperCase()}: ${d.message}`);
     const shouldVerify = mode === "verify" || (mode === "run" && options.verifyBeforeRun === true);
     const shouldAnalyzeProofs = shouldVerify || mode === "semantics";
@@ -26,8 +28,9 @@ export function runOnSource(source, mode, options = {}) {
     let wroteFiles = [];
     let verification = null;
     let semanticsBackend = null;
+    let compilerSemantics = null;
     if (shouldAnalyzeProofs) {
-        verification = verifyProgram(frontend.program, frontend.typeMap);
+        verification = verifyProgram(frontend.program, frontend.typeMap, proofTimeoutMs === undefined ? {} : { proofTimeoutMs });
         const metrics = analyzeProgramMetrics(frontend.program);
         diagnostics.push(...verification.diagnostics.map((d) => `${d.severity.toUpperCase()}: ${d.message}`));
         proofSummary.push(...[...verification.proofMap.entries()].map(([fnName, p]) => `${fnName}: ${p.status} (${p.method}) - ${p.details}`));
@@ -45,6 +48,7 @@ export function runOnSource(source, mode, options = {}) {
         });
         implementationSummary = [...optimized.artifacts.implementations.entries()].map(([fnName, impl]) => `${fnName}: ${impl.tag}`);
         if (mode === "semantics") {
+            compilerSemantics = buildCompilerSemantics(ir, optimized, proofTimeoutMs === undefined ? {} : { timeoutMs: proofTimeoutMs });
             semanticsBackend = {
                 optimizeSummary: [...optimizeSummary],
                 implementationSummary: [...implementationSummary],
@@ -71,7 +75,7 @@ export function runOnSource(source, mode, options = {}) {
         }
     }
     if (mode === "semantics") {
-        semantics = renderSemanticsDebugData(buildSemanticsDebugData(frontend, verification ?? verifyProgram(frontend.program, frontend.typeMap), semanticsBackend));
+        semantics = renderSemanticsDebugData(buildSemanticsDebugData(frontend, verification ?? verifyProgram(frontend.program, frontend.typeMap, proofTimeoutMs === undefined ? {} : { proofTimeoutMs }), semanticsBackend, compilerSemantics));
     }
     if (!hasErrors && mode === "run") {
         const execution = executeTopLevelProgram(frontend.program, frontend.typeMap, options.cwd ?? process.cwd());
@@ -131,6 +135,15 @@ function describeWatFallback(fnName, implementation) {
             return _never;
         }
     }
+}
+function resolveProofTimeoutMs(proofTimeoutMs) {
+    if (proofTimeoutMs === undefined) {
+        return DEFAULT_CLI_PROOF_TIMEOUT_MS;
+    }
+    if (!Number.isFinite(proofTimeoutMs) || proofTimeoutMs <= 0) {
+        return DEFAULT_CLI_PROOF_TIMEOUT_MS;
+    }
+    return Math.min(2000, Math.max(1, Math.floor(proofTimeoutMs)));
 }
 export function runOnFile(filepath, mode, options = {}) {
     const source = readFileSync(resolve(filepath), "utf8");

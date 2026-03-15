@@ -1,4 +1,4 @@
-import type { Type } from "@jplmm/ast";
+import { getArrayExtentNames, getScalarBounds, type Type } from "@jplmm/ast";
 import type { IRExpr, IRFunction, IRProgram, IRStructDef } from "@jplmm/ir";
 
 import type {
@@ -65,8 +65,9 @@ function executeFunction(
   ctx.stats.functionCalls += 1;
   ctx.stats.maxCallDepth = Math.max(ctx.stats.maxCallDepth, depth);
 
+  let currentParams = args.map((arg, idx) => normalizeByType(arg, fn.params[idx]?.type, ctx.structs));
   const impl = ctx.artifacts?.implementations.get(fnName);
-  const scalarArgs = asScalarArgs(args);
+  const scalarArgs = asScalarArgs(currentParams);
   if (impl?.tag === "closed_form_linear_countdown" && scalarArgs) {
     recordImplementationHit(ctx.stats, impl.tag);
     return evalClosedFormLinear(impl, scalarArgs);
@@ -79,7 +80,6 @@ function executeFunction(
     }
   }
 
-  let currentParams = args.map((arg, idx) => normalizeByType(arg, fn.params[idx]?.type, ctx.structs));
   if (impl?.tag === "linear_speculation") {
     const specArgs = asScalarArgs(currentParams);
     if (specArgs) {
@@ -105,6 +105,7 @@ function executeFunction(
     const env = new Map<string, RuntimeValue>();
     for (let i = 0; i < fn.params.length; i += 1) {
       env.set(fn.params[i]!.name, currentParams[i]!);
+      bindArrayExtentRuntimeValues(env, fn.params[i]!.type, currentParams[i]!);
     }
 
     const frame: Frame = {
@@ -144,6 +145,19 @@ function executeFunction(
       return frame.currentRes ?? defaultValueForType(fn.retType, ctx.structs);
     }
     currentParams = pendingTailArgs;
+  }
+}
+
+function bindArrayExtentRuntimeValues(env: Map<string, RuntimeValue>, type: Type, value: RuntimeValue): void {
+  const extentNames = getArrayExtentNames(type);
+  if (!extentNames || !isArrayValue(value)) {
+    return;
+  }
+  for (let i = 0; i < extentNames.length; i += 1) {
+    const extentName = extentNames[i];
+    if (typeof extentName === "string") {
+      env.set(extentName, value.dims[i] ?? 0);
+    }
   }
 }
 
@@ -609,11 +623,12 @@ function sameValue(
   structs: Map<string, IRStructDef>,
 ): boolean {
   if (!type || type.tag === "int") {
-    return saturateInt(assertNumber(a, "int equality")) === saturateInt(assertNumber(b, "int equality"));
+    return normalizeScalarByType(assertNumber(a, "int equality"), type)
+      === normalizeScalarByType(assertNumber(b, "int equality"), type);
   }
   if (type.tag === "float") {
-    const left = assertNumber(a, "float equality");
-    const right = assertNumber(b, "float equality");
+    const left = normalizeScalarByType(assertNumber(a, "float equality"), type);
+    const right = normalizeScalarByType(assertNumber(b, "float equality"), type);
     if (Object.is(left, -0) && Object.is(right, 0)) {
       return true;
     }
@@ -695,10 +710,26 @@ function normalizeScalarByType(value: number, type: Type | undefined): number {
     return value;
   }
   if (type.tag === "int") {
-    return saturateInt(value);
+    let out = saturateInt(value);
+    const bounds = getScalarBounds(type);
+    if (bounds && bounds.lo !== null) {
+      out = Math.max(out, saturateInt(bounds.lo));
+    }
+    if (bounds && bounds.hi !== null) {
+      out = Math.min(out, saturateInt(bounds.hi));
+    }
+    return out;
   }
   if (type.tag === "float") {
-    return nanToZero(f32(value));
+    let out = nanToZero(f32(value));
+    const bounds = getScalarBounds(type);
+    if (bounds && bounds.lo !== null) {
+      out = Math.max(out, nanToZero(f32(bounds.lo)));
+    }
+    if (bounds && bounds.hi !== null) {
+      out = Math.min(out, nanToZero(f32(bounds.hi)));
+    }
+    return out;
   }
   return value;
 }

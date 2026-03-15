@@ -1,3 +1,4 @@
+import { getScalarBounds } from "@jplmm/ast";
 export function matchClosedForms(program) {
     const matches = [];
     for (const fn of program.functions) {
@@ -10,6 +11,10 @@ export function matchClosedForms(program) {
 }
 function matchLinearCountdown(fn) {
     if (fn.params.length !== 1 || fn.params[0]?.type.tag !== "int" || fn.retType.tag !== "int") {
+        return null;
+    }
+    const bounds = getScalarBounds(fn.params[0]?.type);
+    if (bounds?.lo === null || bounds?.lo === undefined || bounds.lo < 0) {
         return null;
     }
     const retStmts = fn.body.filter((stmt) => stmt.tag === "ret");

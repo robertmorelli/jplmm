@@ -1,3 +1,4 @@
+import { eraseScalarBounds, getArrayExtentNames, isNumericType, renderType, sameTypeShape, } from "@jplmm/ast";
 import { error } from "./errors";
 const INT_T = { tag: "int" };
 const FLOAT_T = { tag: "float" };
@@ -20,6 +21,7 @@ export function typecheckProgram(program) {
             const env = new Map();
             for (const p of fnDef.params) {
                 env.set(p.name, p.type);
+                bindArrayExtentNames(env, p.type);
             }
             const ctx = { sig: fnSigs.get(fnDef.name) };
             for (const stmt of fnDef.body) {
@@ -30,8 +32,8 @@ export function typecheckProgram(program) {
                 }
                 if (stmt.tag === "ret") {
                     const t = inferExpr(stmt.expr, env, fnSigs, structDefs, diagnostics, typeMap, ctx);
-                    if (!sameType(t, fnDef.retType)) {
-                        diagnostics.push(nodeError(stmt, `ret type mismatch: expected ${typeToString(fnDef.retType)}, got ${typeToString(t)}`, "RET_TYPE"));
+                    if (!sameTypeShape(t, fnDef.retType)) {
+                        diagnostics.push(nodeError(stmt, `ret type mismatch: expected ${renderType(fnDef.retType)}, got ${renderType(t)}`, "RET_TYPE"));
                     }
                     continue;
                 }
@@ -85,7 +87,7 @@ function typecheckTopLevelCmd(cmd, env, fnSigs, structDefs, diagnostics, typeMap
         case "write_image": {
             const t = inferExpr(cmd.expr, env, fnSigs, structDefs, diagnostics, typeMap, undefined);
             if (!isWritableImageType(t)) {
-                diagnostics.push(nodeError(cmd, `write image expects int[][] or int[][][], got ${typeToString(t)}`, "IMAGE_TYPE"));
+                diagnostics.push(nodeError(cmd, `write image expects int[][] or int[][][], got ${renderType(t)}`, "IMAGE_TYPE"));
             }
             return;
         }
@@ -114,7 +116,7 @@ function applyLValueType(lvalue, exprType, env, fnSigs, structDefs, diagnostics,
         case "field": {
             const baseType = env.get(lvalue.base);
             if (!baseType || baseType.tag !== "named") {
-                diagnostics.push(nodeError(lvalue, `Field assignment requires a struct variable, got ${typeToString(baseType ?? VOID_T)}`, "FIELD_BASE"));
+                diagnostics.push(nodeError(lvalue, `Field assignment requires a struct variable, got ${renderType(baseType ?? VOID_T)}`, "FIELD_BASE"));
                 return;
             }
             const field = structDefs.get(baseType.name)?.find((candidate) => candidate.name === lvalue.field);
@@ -122,8 +124,8 @@ function applyLValueType(lvalue, exprType, env, fnSigs, structDefs, diagnostics,
                 diagnostics.push(nodeError(lvalue, `Struct '${baseType.name}' has no field '${lvalue.field}'`, "FIELD_UNKNOWN"));
                 return;
             }
-            if (!sameType(field.type, exprType)) {
-                diagnostics.push(nodeError(lvalue, `Field assignment type mismatch: expected ${typeToString(field.type)}, got ${typeToString(exprType)}`, "FIELD_ASSIGN_TYPE"));
+            if (!sameTypeShape(field.type, exprType)) {
+                diagnostics.push(nodeError(lvalue, `Field assignment type mismatch: expected ${renderType(field.type)}, got ${renderType(exprType)}`, "FIELD_ASSIGN_TYPE"));
             }
             return;
         }
@@ -214,8 +216,8 @@ function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
                 for (let i = 0; i < expr.args.length; i += 1) {
                     const actual = inferExpr(expr.args[i], env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
                     const expected = fnCtx.sig.params[i];
-                    if (expected && !sameType(actual, expected)) {
-                        diagnostics.push(nodeError(expr.args[i], `rec argument ${i + 1} type mismatch: expected ${typeToString(expected)}, got ${typeToString(actual)}`, "REC_ARG_TYPE"));
+                    if (expected && !sameTypeShape(actual, expected)) {
+                        diagnostics.push(nodeError(expr.args[i], `rec argument ${i + 1} type mismatch: expected ${renderType(expected)}, got ${renderType(actual)}`, "REC_ARG_TYPE"));
                     }
                 }
                 out = fnCtx.sig.ret;
@@ -223,22 +225,22 @@ function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
             break;
         case "unop": {
             const t = inferExpr(expr.operand, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
-            if (!isNumeric(t)) {
-                diagnostics.push(nodeError(expr, `Unary '-' requires numeric operand, got ${typeToString(t)}`));
+            if (!isNumericType(t)) {
+                diagnostics.push(nodeError(expr, `Unary '-' requires numeric operand, got ${renderType(t)}`));
             }
-            out = t;
+            out = eraseScalarBounds(t);
             break;
         }
         case "binop": {
             const a = inferExpr(expr.left, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
             const b = inferExpr(expr.right, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
-            if (!sameType(a, b)) {
-                diagnostics.push(nodeError(expr, `Binary '${expr.op}' requires same-type operands, got ${typeToString(a)} and ${typeToString(b)}`, "BINOP_MISMATCH"));
+            if (!sameTypeShape(a, b)) {
+                diagnostics.push(nodeError(expr, `Binary '${expr.op}' requires same-type operands, got ${renderType(a)} and ${renderType(b)}`, "BINOP_MISMATCH"));
             }
-            else if (!isNumeric(a)) {
-                diagnostics.push(nodeError(expr, `Binary '${expr.op}' requires numeric operands, got ${typeToString(a)}`, "BINOP_NUM"));
+            else if (!isNumericType(a)) {
+                diagnostics.push(nodeError(expr, `Binary '${expr.op}' requires numeric operands, got ${renderType(a)}`, "BINOP_NUM"));
             }
-            out = a;
+            out = eraseScalarBounds(a);
             break;
         }
         case "call":
@@ -253,7 +255,7 @@ function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
                 }
             }
             if (arrayT.tag !== "array") {
-                diagnostics.push(nodeError(expr, `Indexing requires array type, got ${typeToString(arrayT)}`, "INDEX_BASE"));
+                diagnostics.push(nodeError(expr, `Indexing requires array type, got ${renderType(arrayT)}`, "INDEX_BASE"));
                 out = VOID_T;
             }
             else if (expr.indices.length > arrayT.dims) {
@@ -268,6 +270,7 @@ function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
                     tag: "array",
                     element: arrayT.element,
                     dims: arrayT.dims - expr.indices.length,
+                    ...(sliceArrayExtentNames(arrayT, expr.indices.length) ? { extentNames: sliceArrayExtentNames(arrayT, expr.indices.length) } : {}),
                 };
             }
             break;
@@ -275,7 +278,7 @@ function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
         case "field": {
             const targetType = inferExpr(expr.target, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
             if (targetType.tag !== "named") {
-                diagnostics.push(nodeError(expr, `Field access requires a struct, got ${typeToString(targetType)}`, "FIELD_BASE"));
+                diagnostics.push(nodeError(expr, `Field access requires a struct, got ${renderType(targetType)}`, "FIELD_BASE"));
                 out = VOID_T;
                 break;
             }
@@ -298,14 +301,14 @@ function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
                 const first = inferExpr(expr.elements[0], env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
                 for (let i = 1; i < expr.elements.length; i += 1) {
                     const t = inferExpr(expr.elements[i], env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
-                    if (!sameType(t, first)) {
+                    if (!sameTypeShape(t, first)) {
                         diagnostics.push(nodeError(expr.elements[i], "Array literal elements must share one type", "ARRAY_HOMOGENEOUS"));
                     }
                 }
                 if (first.tag === "void") {
                     diagnostics.push(nodeError(expr.elements[0], "Array literal elements cannot be void", "ARRAY_ELEM_VOID"));
                 }
-                out = prependArrayDimension(first);
+                out = prependArrayDimension(eraseScalarBounds(first));
             }
             break;
         }
@@ -325,15 +328,15 @@ function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
             for (let i = 0; i < expr.fields.length; i += 1) {
                 const actual = inferExpr(expr.fields[i], env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
                 const expected = fields[i]?.type;
-                if (expected && !sameType(actual, expected)) {
-                    diagnostics.push(nodeError(expr.fields[i], `Struct '${expr.name}' field ${i + 1} type mismatch: expected ${typeToString(expected)}, got ${typeToString(actual)}`, "STRUCT_FIELD_TYPE"));
+                if (expected && !sameTypeShape(actual, expected)) {
+                    diagnostics.push(nodeError(expr.fields[i], `Struct '${expr.name}' field ${i + 1} type mismatch: expected ${renderType(expected)}, got ${renderType(actual)}`, "STRUCT_FIELD_TYPE"));
                 }
             }
             out = { tag: "named", name: expr.name };
             break;
         }
         case "array_expr": {
-            const bodyType = inferComprehensionBody(expr.bindings, expr.body, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
+            const bodyType = eraseScalarBounds(inferComprehensionBody(expr.bindings, expr.body, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx));
             if (bodyType.tag === "void") {
                 diagnostics.push(nodeError(expr.body, "array body cannot be void", "ARRAY_BODY_VOID"));
             }
@@ -342,10 +345,10 @@ function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
         }
         case "sum_expr": {
             const bodyType = inferComprehensionBody(expr.bindings, expr.body, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx);
-            if (!isNumeric(bodyType)) {
-                diagnostics.push(nodeError(expr.body, `sum body must be numeric, got ${typeToString(bodyType)}`, "SUM_TYPE"));
+            if (!isNumericType(bodyType)) {
+                diagnostics.push(nodeError(expr.body, `sum body must be numeric, got ${renderType(bodyType)}`, "SUM_TYPE"));
             }
-            out = bodyType;
+            out = eraseScalarBounds(bodyType);
             break;
         }
         default: {
@@ -393,19 +396,19 @@ function inferCall(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
     }
     if (name === "max" || name === "min") {
         const ts = inferArgs();
-        if (ts.length !== 2 || !ts[0] || !ts[1] || !sameType(ts[0], ts[1]) || !isNumeric(ts[0])) {
+        if (ts.length !== 2 || !ts[0] || !ts[1] || !sameTypeShape(ts[0], ts[1]) || !isNumericType(ts[0])) {
             diagnostics.push(nodeError(expr, `${name} expects two numeric arguments of the same type`, "BUILTIN_SIG"));
             return VOID_T;
         }
-        return ts[0];
+        return eraseScalarBounds(ts[0]);
     }
     if (name === "abs") {
         const [a] = inferArgs();
-        if (!a || !isNumeric(a) || args.length !== 1) {
+        if (!a || !isNumericType(a) || args.length !== 1) {
             diagnostics.push(nodeError(expr, "abs expects exactly one numeric argument", "BUILTIN_SIG"));
             return VOID_T;
         }
-        return a;
+        return eraseScalarBounds(a);
     }
     if (name === "clamp") {
         const ts = inferArgs();
@@ -413,13 +416,13 @@ function inferCall(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
             !ts[0] ||
             !ts[1] ||
             !ts[2] ||
-            !sameType(ts[0], ts[1]) ||
-            !sameType(ts[0], ts[2]) ||
-            !isNumeric(ts[0])) {
+            !sameTypeShape(ts[0], ts[1]) ||
+            !sameTypeShape(ts[0], ts[2]) ||
+            !isNumericType(ts[0])) {
             diagnostics.push(nodeError(expr, "clamp expects three numeric arguments of the same type", "BUILTIN_SIG"));
             return VOID_T;
         }
-        return ts[0];
+        return eraseScalarBounds(ts[0]);
     }
     if (name === "sqrt" ||
         name === "exp" ||
@@ -454,14 +457,11 @@ function inferCall(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
         return sig.ret;
     }
     for (let i = 0; i < argTypes.length; i += 1) {
-        if (!sameType(argTypes[i], sig.params[i])) {
-            diagnostics.push(nodeError(args[i], `Function '${name}' arg ${i + 1} type mismatch: expected ${typeToString(sig.params[i])}, got ${typeToString(argTypes[i])}`, "CALL_ARG_TYPE"));
+        if (!sameTypeShape(argTypes[i], sig.params[i])) {
+            diagnostics.push(nodeError(args[i], `Function '${name}' arg ${i + 1} type mismatch: expected ${renderType(sig.params[i])}, got ${renderType(argTypes[i])}`, "CALL_ARG_TYPE"));
         }
     }
-    return sig.ret;
-}
-function isNumeric(t) {
-    return t.tag === "int" || t.tag === "float";
+    return eraseScalarBounds(sig.ret);
 }
 function tryEvalConstInt(expr) {
     switch (expr.tag) {
@@ -525,34 +525,26 @@ function saturateInt(value) {
     }
     return Math.max(INT32_MIN, Math.min(INT32_MAX, Math.trunc(value)));
 }
-function sameType(a, b) {
-    if (a.tag !== b.tag) {
-        return false;
-    }
-    if (a.tag === "array" && b.tag === "array") {
-        return a.dims === b.dims && sameType(a.element, b.element);
-    }
-    if (a.tag === "named" && b.tag === "named") {
-        return a.name === b.name;
-    }
-    return true;
-}
 function prependArrayDimension(type) {
     if (type.tag === "array") {
+        const extentNames = getArrayExtentNames(type);
         return {
             tag: "array",
             element: type.element,
             dims: type.dims + 1,
+            ...(extentNames ? { extentNames: [null, ...extentNames] } : {}),
         };
     }
     return { tag: "array", element: type, dims: 1 };
 }
 function addArrayDimensions(type, dims) {
     if (type.tag === "array") {
+        const extentNames = getArrayExtentNames(type);
         return {
             tag: "array",
             element: type.element,
             dims: type.dims + dims,
+            ...(extentNames ? { extentNames: [...new Array(dims).fill(null), ...extentNames] } : {}),
         };
     }
     return {
@@ -561,27 +553,30 @@ function addArrayDimensions(type, dims) {
         dims,
     };
 }
+function bindArrayExtentNames(env, type) {
+    const extentNames = getArrayExtentNames(type);
+    if (!extentNames) {
+        return;
+    }
+    for (const extentName of extentNames) {
+        if (extentName !== null) {
+            env.set(extentName, INT_T);
+        }
+    }
+}
+function sliceArrayExtentNames(type, consumed) {
+    const names = getArrayExtentNames(type);
+    if (!names) {
+        return undefined;
+    }
+    const sliced = names.slice(consumed);
+    return sliced.some((name) => name !== null) ? sliced : undefined;
+}
 function isWritableImageType(type) {
     if (type.tag !== "array" || type.element.tag !== "int") {
         return false;
     }
     return type.dims === 2 || type.dims === 3;
-}
-function typeToString(t) {
-    switch (t.tag) {
-        case "int":
-        case "float":
-        case "void":
-            return t.tag;
-        case "named":
-            return t.name;
-        case "array":
-            return `${typeToString(t.element)}${"[]".repeat(t.dims)}`;
-        default: {
-            const _never = t;
-            return `${_never}`;
-        }
-    }
 }
 function nodeError(node, message, code) {
     return error(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);

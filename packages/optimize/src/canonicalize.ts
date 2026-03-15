@@ -20,6 +20,11 @@ export type CanonicalizeResult = {
   stats: CanonicalizeStats;
 };
 
+type CanonicalScope = {
+  slots: Map<string, number>;
+  nextSlot: number;
+};
+
 const DEFAULT_STATS: CanonicalizeStats = {
   totalDivInserted: 0,
   totalModInserted: 0,
@@ -146,7 +151,7 @@ function canonicalizeGlobal(
   nextId: () => number,
   stats: CanonicalizeStats,
 ): IRGlobalLet {
-  return { ...g, expr: canonicalizeExpr(g.expr, nextId, stats) };
+  return { ...g, expr: canonicalizeExpr(g.expr, nextId, stats, emptyScope()) };
 }
 
 function canonicalizeFunction(
@@ -154,68 +159,130 @@ function canonicalizeFunction(
   nextId: () => number,
   stats: CanonicalizeStats,
 ): IRFunction {
-  return {
-    ...fn,
-    body: fn.body.map((stmt) => canonicalizeStmt(stmt, nextId, stats)),
-  };
-}
-
-function canonicalizeStmt(stmt: IRStmt, nextId: () => number, stats: CanonicalizeStats): IRStmt {
-  if (stmt.tag === "gas") {
-    return stmt;
+  let scope = scopeWithNames(emptyScope(), fn.params.map((param) => param.name));
+  const body: IRStmt[] = [];
+  for (const stmt of fn.body) {
+    const canonical = canonicalizeStmt(stmt, nextId, stats, scope);
+    body.push(canonical.stmt);
+    scope = canonical.scope;
   }
   return {
-    ...stmt,
-    expr: canonicalizeExpr(stmt.expr, nextId, stats),
+    ...fn,
+    body,
   };
 }
 
-function canonicalizeExpr(expr: IRExpr, nextId: () => number, stats: CanonicalizeStats): IRExpr {
-  const mapped = mapChildren(expr, (child) => canonicalizeExpr(child, nextId, stats));
-  const totalized = applyTotalArithmetic(mapped, nextId, stats);
-  return applySaturatingArithmetic(totalized, nextId, stats);
+function canonicalizeStmt(
+  stmt: IRStmt,
+  nextId: () => number,
+  stats: CanonicalizeStats,
+  scope: CanonicalScope,
+): { stmt: IRStmt; scope: CanonicalScope } {
+  if (stmt.tag === "gas") {
+    return { stmt, scope };
+  }
+  const expr = canonicalizeExpr(stmt.expr, nextId, stats, scope);
+  if (stmt.tag === "let") {
+    return {
+      stmt: {
+        ...stmt,
+        expr,
+      },
+      scope: scopeWithNames(scope, [stmt.name]),
+    };
+  }
+  return {
+    stmt: {
+      ...stmt,
+      expr,
+    },
+    scope,
+  };
 }
 
-function mapChildren(expr: IRExpr, f: (child: IRExpr) => IRExpr): IRExpr {
+function canonicalizeExpr(
+  expr: IRExpr,
+  nextId: () => number,
+  stats: CanonicalizeStats,
+  scope: CanonicalScope,
+): IRExpr {
+  const mapped = mapChildren(expr, (child, childScope) => canonicalizeExpr(child, nextId, stats, childScope), scope);
+  const normalized = normalizeCommutativeOperands(mapped, scope);
+  const totalized = applyTotalArithmetic(normalized, nextId, stats);
+  const saturated = applySaturatingArithmetic(totalized, nextId, stats);
+  return normalizeCommutativeOperands(saturated, scope);
+}
+
+function mapChildren(
+  expr: IRExpr,
+  f: (child: IRExpr, scope: CanonicalScope) => IRExpr,
+  scope: CanonicalScope,
+): IRExpr {
   switch (expr.tag) {
     case "binop":
-      return { ...expr, left: f(expr.left), right: f(expr.right) };
+      return { ...expr, left: f(expr.left, scope), right: f(expr.right, scope) };
     case "unop":
-      return { ...expr, operand: f(expr.operand) };
+      return { ...expr, operand: f(expr.operand, scope) };
     case "call":
-      return { ...expr, args: expr.args.map(f) };
+      return { ...expr, args: expr.args.map((arg) => f(arg, scope)) };
     case "index":
-      return { ...expr, array: f(expr.array), indices: expr.indices.map(f) };
+      return {
+        ...expr,
+        array: f(expr.array, scope),
+        indices: expr.indices.map((index) => f(index, scope)),
+      };
     case "field":
-      return { ...expr, target: f(expr.target) };
+      return { ...expr, target: f(expr.target, scope) };
     case "struct_cons":
-      return { ...expr, fields: expr.fields.map(f) };
+      return { ...expr, fields: expr.fields.map((field) => f(field, scope)) };
     case "array_cons":
-      return { ...expr, elements: expr.elements.map(f) };
+      return { ...expr, elements: expr.elements.map((element) => f(element, scope)) };
     case "array_expr":
     case "sum_expr":
       return {
         ...expr,
-        bindings: expr.bindings.map((b) => ({ ...b, expr: f(b.expr) })),
-        body: f(expr.body),
+        ...mapBindingsAndBody(expr.bindings, expr.body, f, scope),
       };
     case "rec":
-      return { ...expr, args: expr.args.map(f) };
+      return { ...expr, args: expr.args.map((arg) => f(arg, scope)) };
     case "total_div":
     case "total_mod":
     case "sat_add":
     case "sat_sub":
     case "sat_mul":
-      return { ...expr, left: f(expr.left), right: f(expr.right) };
+      return { ...expr, left: f(expr.left, scope), right: f(expr.right, scope) };
     case "nan_to_zero":
     case "sat_neg":
       return {
         ...expr,
-        ...(expr.tag === "nan_to_zero" ? { value: f(expr.value) } : { operand: f(expr.operand) }),
+        ...(expr.tag === "nan_to_zero"
+          ? { value: f(expr.value, scope) }
+          : { operand: f(expr.operand, scope) }),
       };
     default:
       return expr;
   }
+}
+
+function mapBindingsAndBody(
+  bindings: Array<{ name: string; expr: IRExpr }>,
+  body: IRExpr,
+  f: (child: IRExpr, scope: CanonicalScope) => IRExpr,
+  scope: CanonicalScope,
+): { bindings: Array<{ name: string; expr: IRExpr }>; body: IRExpr } {
+  const scoped = cloneScope(scope);
+  const mappedBindings = bindings.map((binding) => {
+    const mapped = {
+      ...binding,
+      expr: f(binding.expr, scoped),
+    };
+    bindName(scoped, binding.name);
+    return mapped;
+  });
+  return {
+    bindings: mappedBindings,
+    body: f(body, scoped),
+  };
 }
 
 function applyTotalArithmetic(
@@ -326,6 +393,97 @@ function applySaturatingArithmetic(
   return expr;
 }
 
+function normalizeCommutativeOperands(expr: IRExpr, scope: CanonicalScope): IRExpr {
+  if (!isCommutativeExpr(expr)) {
+    return expr;
+  }
+  const leftKey = exprOrderKey(expr.left, scope);
+  const rightKey = exprOrderKey(expr.right, scope);
+  if (rightKey >= leftKey) {
+    return expr;
+  }
+  return {
+    ...expr,
+    left: expr.right,
+    right: expr.left,
+  };
+}
+
+function isCommutativeExpr(expr: IRExpr): expr is Extract<IRExpr, { tag: "binop" | "sat_add" | "sat_mul" }> {
+  if (expr.tag === "sat_add" || expr.tag === "sat_mul") {
+    return true;
+  }
+  return expr.tag === "binop" && (expr.op === "+" || expr.op === "*");
+}
+
+function exprOrderKey(expr: IRExpr, scope: CanonicalScope): string {
+  switch (expr.tag) {
+    case "int_lit":
+      return `int:${expr.value}`;
+    case "float_lit":
+      return `float:${expr.value}`;
+    case "void_lit":
+      return "void";
+    case "var":
+      return scope.slots.has(expr.name) ? `var@${scope.slots.get(expr.name)}` : `var:${expr.name}`;
+    case "res":
+      return "res";
+    case "binop":
+      return `binop:${expr.op}(${exprOrderKey(expr.left, scope)},${exprOrderKey(expr.right, scope)})`;
+    case "unop":
+      return `unop:${expr.op}(${exprOrderKey(expr.operand, scope)})`;
+    case "call":
+      return `call:${expr.name}(${expr.args.map((arg) => exprOrderKey(arg, scope)).join(",")})`;
+    case "index":
+      return `index(${exprOrderKey(expr.array, scope)}|${expr.indices.map((index) => exprOrderKey(index, scope)).join(",")})`;
+    case "field":
+      return `field:${expr.field}(${exprOrderKey(expr.target, scope)})`;
+    case "struct_cons":
+      return `struct:${expr.name}(${expr.fields.map((field) => exprOrderKey(field, scope)).join(",")})`;
+    case "array_cons":
+      return `array_cons(${expr.elements.map((element) => exprOrderKey(element, scope)).join(",")})`;
+    case "array_expr":
+      return boundedExprOrderKey("array_expr", expr.bindings, expr.body, scope);
+    case "sum_expr":
+      return boundedExprOrderKey("sum_expr", expr.bindings, expr.body, scope);
+    case "rec":
+      return `rec(${expr.args.map((arg) => exprOrderKey(arg, scope)).join(",")})`;
+    case "total_div":
+      return `total_div(${exprOrderKey(expr.left, scope)},${exprOrderKey(expr.right, scope)})`;
+    case "total_mod":
+      return `total_mod(${exprOrderKey(expr.left, scope)},${exprOrderKey(expr.right, scope)})`;
+    case "sat_add":
+      return `sat_add(${exprOrderKey(expr.left, scope)},${exprOrderKey(expr.right, scope)})`;
+    case "sat_sub":
+      return `sat_sub(${exprOrderKey(expr.left, scope)},${exprOrderKey(expr.right, scope)})`;
+    case "sat_mul":
+      return `sat_mul(${exprOrderKey(expr.left, scope)},${exprOrderKey(expr.right, scope)})`;
+    case "sat_neg":
+      return `sat_neg(${exprOrderKey(expr.operand, scope)})`;
+    case "nan_to_zero":
+      return `nan_to_zero(${exprOrderKey(expr.value, scope)})`;
+    default: {
+      const _never: never = expr;
+      return `${_never}`;
+    }
+  }
+}
+
+function boundedExprOrderKey(
+  tag: "array_expr" | "sum_expr",
+  bindings: Array<{ name: string; expr: IRExpr }>,
+  body: IRExpr,
+  scope: CanonicalScope,
+): string {
+  const scoped = cloneScope(scope);
+  const bindingKeys = bindings.map((binding) => {
+    const key = exprOrderKey(binding.expr, scoped);
+    const slot = bindName(scoped, binding.name);
+    return `${slot}:${key}`;
+  });
+  return `${tag}[${bindingKeys.join(",")}](${exprOrderKey(body, scoped)})`;
+}
+
 function wrapNanToZero(expr: IRExpr, nextId: () => number, stats: CanonicalizeStats): IRExpr {
   if (expr.tag === "nan_to_zero") {
     return expr;
@@ -348,6 +506,35 @@ function zeroLiteral(resultType: IRExpr["resultType"], id: number): IRExpr {
     return { tag: "float_lit", value: 0, id, resultType };
   }
   return { tag: "int_lit", value: 0, id, resultType };
+}
+
+function emptyScope(): CanonicalScope {
+  return {
+    slots: new Map(),
+    nextSlot: 0,
+  };
+}
+
+function cloneScope(scope: CanonicalScope): CanonicalScope {
+  return {
+    slots: new Map(scope.slots),
+    nextSlot: scope.nextSlot,
+  };
+}
+
+function scopeWithNames(scope: CanonicalScope, names: string[]): CanonicalScope {
+  const next = cloneScope(scope);
+  for (const name of names) {
+    bindName(next, name);
+  }
+  return next;
+}
+
+function bindName(scope: CanonicalScope, name: string): number {
+  const slot = scope.nextSlot;
+  scope.nextSlot += 1;
+  scope.slots.set(name, slot);
+  return slot;
 }
 
 function makeSyntheticIdFactory(program: IRProgram): () => number {

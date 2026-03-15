@@ -1,15 +1,19 @@
 import { typecheckProgram } from "@jplmm/frontend";
-import { analyzeIrFunction, analyzeIrProofSites, buildCanonicalProgram, hasRec, } from "@jplmm/proof";
-export function verifyProgram(program, typeMap) {
+import { analyzeIrFunction, analyzeIrProofSites, buildIrCallSummaries, buildCanonicalProgram, hasRec, } from "@jplmm/proof";
+const DEFAULT_PROOF_TIMEOUT_MS = 2000;
+export function verifyProgram(program, typeMap, options = {}) {
     const proofMap = new Map();
     const diagnostics = [];
     const effectiveTypeMap = typeMap ?? typecheckProgram(program).typeMap;
     const canonical = buildCanonicalProgram(program, effectiveTypeMap);
     const canonicalFns = new Map(canonical.functions.map((fn) => [fn.name, fn]));
     const structDefs = new Map(canonical.structs.map((struct) => [struct.name, struct.fields]));
+    const callSummaries = buildIrCallSummaries(canonical, structDefs, "verify_call_");
     const traceMap = new Map();
+    const proofTimeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
+    const solverOptions = proofTimeoutMs === undefined ? {} : { timeoutMs: proofTimeoutMs };
     for (const fn of canonical.functions) {
-        const analysis = analyzeIrFunction(fn, structDefs);
+        const analysis = analyzeIrFunction(fn, structDefs, "", { callSummaries });
         traceMap.set(fn.name, {
             fnName: fn.name,
             canonical: fn,
@@ -18,7 +22,7 @@ export function verifyProgram(program, typeMap) {
             result: analysis.result,
             stmtSemantics: analysis.stmtSemantics,
             radSites: analysis.radSites,
-            proofSites: analyzeIrProofSites(fn, analysis),
+            proofSites: analyzeIrProofSites(fn, analysis, solverOptions),
             callSigs: analysis.callSigs,
         });
     }
@@ -28,14 +32,14 @@ export function verifyProgram(program, typeMap) {
             continue;
         }
         const trace = traceMap.get(fn.name) ?? null;
-        const result = verifyFunction(fn.name, canonicalFns.get(fn.name) ?? null, trace, diagnostics);
+        const result = verifyFunction(fn.name, canonicalFns.get(fn.name) ?? null, trace, diagnostics, solverOptions);
         if (result) {
             proofMap.set(fn.name, result);
         }
     }
     return { proofMap, diagnostics, canonicalProgram: canonical, traceMap };
 }
-function verifyFunction(fnName, fn, trace, diagnostics) {
+function verifyFunction(fnName, fn, trace, diagnostics, solverOptions) {
     if (!fn || !hasRec(fn)) {
         return null;
     }
@@ -85,7 +89,7 @@ function verifyFunction(fnName, fn, trace, diagnostics) {
     }
     const methods = [];
     const details = [];
-    const siteTraces = trace?.proofSites ?? analyzeIrProofSites(fn, analysis);
+    const siteTraces = trace?.proofSites ?? analyzeIrProofSites(fn, analysis, solverOptions);
     for (const trace of siteTraces) {
         const winner = trace.obligations.find((obligation) => obligation.proved) ?? null;
         if (!winner) {
@@ -118,5 +122,14 @@ function unwrapTimedDefinition(cmd, tag) {
         return cmd.cmd;
     }
     return null;
+}
+function resolveProofTimeoutMs(proofTimeoutMs) {
+    if (proofTimeoutMs === undefined) {
+        return DEFAULT_PROOF_TIMEOUT_MS;
+    }
+    if (!Number.isFinite(proofTimeoutMs) || proofTimeoutMs <= 0) {
+        return DEFAULT_PROOF_TIMEOUT_MS;
+    }
+    return Math.min(2000, Math.max(1, Math.floor(proofTimeoutMs)));
 }
 //# sourceMappingURL=verify.js.map

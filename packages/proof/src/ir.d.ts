@@ -1,5 +1,6 @@
-import type { Param, Program, Type } from "@jplmm/ast";
+import { type Param, type Program, type Type } from "@jplmm/ast";
 import { type IRExpr, type IRFunction, type IRProgram, type IRStmt, type IRStructDef } from "@jplmm/ir";
+import { type Z3RunOptions } from "@jplmm/smt";
 import { type ScalarExpr, type ScalarTag, type SymValue } from "./scalar";
 export type IrRadWitness = {
     stmtIndex: number;
@@ -12,7 +13,7 @@ export type IrRecSite = {
     args: IRExpr[];
     argValues: Map<number, SymValue>;
     issues: string[];
-    resultSymbol?: string;
+    resultValue: SymValue;
     currentRes?: SymValue | null;
 };
 export type IrSiteProof = {
@@ -50,6 +51,7 @@ export type IrStmtSemantics = {
 };
 export type IrFunctionAnalysis = {
     paramValues: Map<string, SymValue>;
+    exprSemantics: Map<number, SymValue>;
     result: SymValue | null;
     stmtSemantics: IrStmtSemantics[];
     radSites: IrRadWitness[];
@@ -59,16 +61,25 @@ export type IrFunctionAnalysis = {
         ret: ScalarTag;
     }>;
 };
+export type IrCallSummary = {
+    fn: IRFunction;
+    analysis: IrFunctionAnalysis;
+    inlineable: boolean;
+};
+export type AnalyzeIrOptions = {
+    callSummaries?: Map<string, IrCallSummary>;
+};
 export declare function buildCanonicalProgram(program: Program, typeMap: Map<number, Type>): IRProgram;
 export declare function functionsAlphaEquivalent(left: IRFunction, right: IRFunction): boolean;
 export declare function hasRec(fn: IRFunction): boolean;
-export declare function analyzeIrFunction(fn: IRFunction, structDefs?: Map<string, IRStructDef["fields"]>): IrFunctionAnalysis;
-export declare function proveIrSiteWithSmt(fn: IRFunction, rad: IrRadWitness, site: IrRecSite, analysis: IrFunctionAnalysis): IrSiteProof;
+export declare function analyzeIrFunction(fn: IRFunction, structDefs?: Map<string, IRStructDef["fields"]>, symbolPrefix?: string, options?: AnalyzeIrOptions): IrFunctionAnalysis;
+export declare function buildIrCallSummaries(program: IRProgram, structDefs?: Map<string, IRStructDef["fields"]>, symbolPrefix?: string): Map<string, IrCallSummary>;
+export declare function proveIrSiteWithSmt(fn: IRFunction, rad: IrRadWitness, site: IrRecSite, analysis: IrFunctionAnalysis, solverOptions?: Z3RunOptions): IrSiteProof;
 export declare function checkIrStructuralDecrease(params: Param[], radExpr: IRExpr, recArgs: IRExpr[]): {
     ok: boolean;
     reason: string;
 };
-export declare function analyzeIrProofSites(fn: IRFunction, analysis?: IrFunctionAnalysis): IrProofSiteTrace[];
+export declare function analyzeIrProofSites(fn: IRFunction, analysis?: IrFunctionAnalysis, solverOptions?: Z3RunOptions): IrProofSiteTrace[];
 export declare function renderIrFunctionHeader(fn: IRFunction): string;
 export declare function renderIrFunction(fn: IRFunction): string[];
 export declare function renderIrStmt(stmt: IRStmt): string;

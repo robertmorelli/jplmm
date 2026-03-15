@@ -8,7 +8,7 @@ import { optimizeProgram } from "../src/pipeline.ts";
 
 function compile(source: string) {
   const frontend = runFrontend(source);
-  expect(frontend.diagnostics).toEqual([]);
+  expect(frontend.diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
   return buildIR(frontend.program, frontend.typeMap);
 }
 
@@ -197,5 +197,46 @@ describe("IR runtime semantics", () => {
     const made = executeProgram(program, "make", [0]).value;
     const result = executeProgram(program, "first", [made, 2, 3]);
     expect(result.value).toBe(1);
+  });
+
+  it("normalizes bounded scalar parameters at function entry", () => {
+    const program = compile(`
+      fn clamp_in(x:int(0, 10), y:float(0.0, 1.0)): float {
+        ret to_float(x) + y;
+      }
+    `);
+    const result = executeProgram(program, "clamp_in", [-5, 2.5]);
+
+    expect(result.value).toBeCloseTo(1.0, 6);
+  });
+
+  it("normalizes bounded scalar recursive arguments before collapse", () => {
+    const program = compile(`
+      fn zero(x:int(0,_)): int {
+        ret x;
+        ret rec(x - 1);
+        rad x;
+      }
+    `);
+    const result = executeProgram(program, "zero", [-3]);
+
+    expect(result.value).toBe(0);
+    expect(result.stats.recCollapses).toBe(1);
+  });
+
+  it("binds named array extents to runtime dimensions at function entry", () => {
+    const program = compile(`
+      fn make(seed:int): int[][] {
+        ret array [i:2, j:3] seed + i + j;
+      }
+
+      fn shape(a:int[n][m]): int {
+        ret n * 100 + m;
+      }
+    `);
+    const made = executeProgram(program, "make", [7]).value;
+    const result = executeProgram(program, "shape", [made]);
+
+    expect(result.value).toBe(203);
   });
 });

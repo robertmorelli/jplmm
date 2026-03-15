@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getArrayExtentNames, getScalarBounds } from "@jplmm/ast";
 const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
 function createNativeModuleContext(program) {
@@ -162,6 +163,7 @@ function emitClosedFormFunction(fn, implementation, cName) {
         prototypes: [emitPrototype(fn, cName)],
         definitions: [
             `${emitPrototype(fn, cName)} {
+  ${emitParamNormalizationLines(fn.params).join("\n  ")}
   int32_t jplmm_steps = ${stepsExpr};
   return jplmm_sat_add_i32(${implementation.baseValue}, jplmm_sat_mul_i32(${implementation.stepValue}, jplmm_steps));
 }`,
@@ -232,6 +234,14 @@ function emitFunctionBody(ctx, options) {
         lines.push(...localDecls);
     }
     lines.push("for (;;) {");
+    const normalization = emitParamNormalizationLines(fn.params);
+    if (normalization.length > 0) {
+        lines.push(indent(normalization.join("\n"), 1));
+    }
+    const extentLines = emitParamExtentLines(fn.params);
+    if (extentLines.length > 0) {
+        lines.push(indent(extentLines.join("\n"), 1));
+    }
     if (ctx.aitken) {
         lines.push(indent(emitAitkenPrelude(ctx), 1));
     }
@@ -265,7 +275,7 @@ function emitStatements(ctx, options) {
 function emitTailRecStmt(expr, ctx, options) {
     const lines = [];
     for (let i = 0; i < expr.args.length; i += 1) {
-        lines.push(`${recArgLocal(expr.id, i)} = ${emitExpr(expr.args[i], ctx, options)};`);
+        lines.push(`${recArgLocal(expr.id, i)} = ${normalizeScalarExprForType(emitExpr(expr.args[i], ctx, options), ctx.fn.params[i]?.type)};`);
     }
     lines.push(`if (${emitRecCollapseCondition(expr, ctx)}) {`);
     lines.push("  return res;");
@@ -343,8 +353,8 @@ function emitNonTailRecExpr(expr, ctx, options) {
     const tempName = `jplmm_non_tail_${expr.id}`;
     const resultType = cType(expr.resultType);
     const args = expr.args.map((arg) => emitExpr(arg, ctx, options));
-    const callArgs = args.join(", ");
-    const stores = args.map((arg, idx) => `${cType(expr.args[idx].resultType)} ${recArgLocal(expr.id, idx)} = ${arg};`);
+    const stores = args.map((arg, idx) => `${cType(expr.args[idx].resultType)} ${recArgLocal(expr.id, idx)} = ${normalizeScalarExprForType(arg, ctx.fn.params[idx]?.type)};`);
+    const callArgs = expr.args.map((_, idx) => recArgLocal(expr.id, idx)).join(", ");
     const collapse = emitRecCollapseCondition(expr, ctx);
     const lines = [
         `({ ${resultType} ${tempName};`,
@@ -466,7 +476,7 @@ function emitCall(name, args, resultType, functionSymbols) {
     }
 }
 function emitLutWrapperBody(fn, implementation, genericName, tableName) {
-    const lines = [`int32_t jplmm_lut_index = 0;`];
+    const lines = [...emitParamNormalizationLines(fn.params), `int32_t jplmm_lut_index = 0;`];
     const conditions = fn.params
         .map((param, idx) => {
         const range = implementation.parameterRanges[idx];
@@ -529,6 +539,13 @@ function emitAitkenRewrite(ctx, expr) {
 }
 function collectLocalDecls(fn, aitken) {
     const locals = new Map();
+    for (const param of fn.params) {
+        for (const extentName of getArrayExtentNames(param.type) ?? []) {
+            if (extentName !== null) {
+                locals.set(extentName, "int32_t");
+            }
+        }
+    }
     for (const stmt of fn.body) {
         if (stmt.tag === "let") {
             locals.set(stmt.name, cType(stmt.expr.resultType));
@@ -548,6 +565,22 @@ function collectLocalDecls(fn, aitken) {
         locals.set("jplmm_aitken_pred", "float");
     }
     return [...locals.entries()].map(([name, type]) => `${type} ${name} = ${cDefaultValueFromCType(type)};`);
+}
+function emitParamExtentLines(params) {
+    const lines = [];
+    for (const param of params) {
+        const extentNames = getArrayExtentNames(param.type);
+        if (!extentNames) {
+            continue;
+        }
+        for (let i = 0; i < extentNames.length; i += 1) {
+            const extentName = extentNames[i];
+            if (extentName !== null) {
+                lines.push(`${extentName} = jplmm_array_dim(${param.name}, ${i});`);
+            }
+        }
+    }
+    return lines;
 }
 function collectRecTemps(expr, locals) {
     if (expr.tag === "rec") {
@@ -612,6 +645,53 @@ function collectRecTemps(expr, locals) {
 function emitPrototype(fn, cName) {
     const params = fn.params.map((param) => `${cType(param.type)} ${param.name}`).join(", ") || "void";
     return `static ${cType(fn.retType)} ${cName}(${params})`;
+}
+function emitParamNormalizationLines(params) {
+    return params
+        .map((param) => {
+        const normalized = normalizeScalarExprForType(param.name, param.type);
+        return normalized === param.name ? null : `${param.name} = ${normalized};`;
+    })
+        .filter((line) => line !== null);
+}
+function normalizeScalarExprForType(expr, type) {
+    if (!type) {
+        return expr;
+    }
+    if (type.tag === "int") {
+        const bounds = getScalarBounds(type);
+        if (!bounds) {
+            return expr;
+        }
+        if (bounds.lo !== null && bounds.hi !== null) {
+            return `jplmm_clamp_i32(${expr}, ${Math.trunc(bounds.lo)}, ${Math.trunc(bounds.hi)})`;
+        }
+        if (bounds.lo !== null) {
+            return `jplmm_max_i32(${expr}, ${Math.trunc(bounds.lo)})`;
+        }
+        if (bounds.hi !== null) {
+            return `jplmm_min_i32(${expr}, ${Math.trunc(bounds.hi)})`;
+        }
+        return expr;
+    }
+    if (type.tag === "float") {
+        let out = `jplmm_nan_to_zero_f32(${expr})`;
+        const bounds = getScalarBounds(type);
+        if (!bounds) {
+            return out;
+        }
+        if (bounds.lo !== null && bounds.hi !== null) {
+            return `jplmm_clamp_f32(${out}, ${formatFloatLiteral(bounds.lo)}, ${formatFloatLiteral(bounds.hi)})`;
+        }
+        if (bounds.lo !== null) {
+            return `jplmm_max_f32(${out}, ${formatFloatLiteral(bounds.lo)})`;
+        }
+        if (bounds.hi !== null) {
+            return `jplmm_min_f32(${out}, ${formatFloatLiteral(bounds.hi)})`;
+        }
+        return out;
+    }
+    return expr;
 }
 function cType(type) {
     if (type.tag === "float") {

@@ -1,4 +1,4 @@
-import type { Param, Program, Type } from "@jplmm/ast";
+import { getArrayExtentNames, renderType as renderDeclaredType, type Param, type Program, type Type } from "@jplmm/ast";
 import {
   buildIR,
   type IRExpr,
@@ -8,25 +8,34 @@ import {
   type IRStructDef,
 } from "@jplmm/ir";
 import { canonicalizeProgram } from "@jplmm/optimize";
-import { checkSat } from "@jplmm/smt";
+import { checkSat, type Z3RunOptions } from "@jplmm/smt";
+import { withHardTimeout } from "@jplmm/smt";
 
 import {
   type ArrayBinding,
   type ScalarExpr,
   type ScalarTag,
+  type SymArray,
+  type SymLeafModel,
   type SymValue,
   buildMeasureCounterexampleQuery,
   canEncodeScalarExprWithSmt,
   extendSymbolicSubstitution,
   isInterpretedCall,
+  normalizeValueForType,
   isSupportedRecArgValue,
+  makeOpaque,
   queryCounterexample,
+  arrayDims,
   readSymbolicArray,
   renderScalarExpr,
   scalarExprType,
   scalarTag,
+  selectValue,
   sameType,
   substituteScalar,
+  substituteValue,
+  symbolizeAbstractValue,
   symbolizeParamValue,
 } from "./scalar";
 
@@ -42,7 +51,7 @@ export type IrRecSite = {
   args: IRExpr[];
   argValues: Map<number, SymValue>;
   issues: string[];
-  resultSymbol?: string;
+  resultValue: SymValue;
   currentRes?: SymValue | null;
 };
 
@@ -83,24 +92,40 @@ export type IrStmtSemantics = {
 };
 
 type AnalysisState = {
+  symbolPrefix: string;
   env: Map<string, SymValue>;
   paramValues: Map<string, SymValue>;
+  exprSemantics: Map<number, SymValue>;
   res: SymValue | null;
   stmtSemantics: IrStmtSemantics[];
   radSites: IrRadWitness[];
   recSites: IrRecSite[];
   callSigs: Map<string, { args: ScalarTag[]; ret: ScalarTag }>;
   structDefs: Map<string, IRStructDef["fields"]>;
+  callSummaries: Map<string, IrCallSummary>;
 };
 
 export type IrFunctionAnalysis = {
   paramValues: Map<string, SymValue>;
+  exprSemantics: Map<number, SymValue>;
   result: SymValue | null;
   stmtSemantics: IrStmtSemantics[];
   radSites: IrRadWitness[];
   recSites: IrRecSite[];
   callSigs: Map<string, { args: ScalarTag[]; ret: ScalarTag }>;
 };
+
+export type IrCallSummary = {
+  fn: IRFunction;
+  analysis: IrFunctionAnalysis;
+  inlineable: boolean;
+};
+
+export type AnalyzeIrOptions = {
+  callSummaries?: Map<string, IrCallSummary>;
+};
+
+const NAN_GUARDED_BUILTINS = new Set(["sqrt", "log", "pow", "asin", "acos"]);
 
 export function buildCanonicalProgram(program: Program, typeMap: Map<number, Type>): IRProgram {
   return canonicalizeProgram(buildIR(program, typeMap)).program;
@@ -167,6 +192,8 @@ export function hasRec(fn: IRFunction): boolean {
 export function analyzeIrFunction(
   fn: IRFunction,
   structDefs: Map<string, IRStructDef["fields"]> = new Map(),
+  symbolPrefix = "",
+  options: AnalyzeIrOptions = {},
 ): IrFunctionAnalysis {
   const callSigs = new Map<string, { args: ScalarTag[]; ret: ScalarTag }>();
   const env = new Map<string, SymValue>();
@@ -175,17 +202,21 @@ export function analyzeIrFunction(
     const value = symbolizeParamValue(param, callSigs, structDefs);
     env.set(param.name, value);
     paramValues.set(param.name, value);
+    bindArrayExtentValues(env, param.type, value);
   }
 
   const state: AnalysisState = {
+    symbolPrefix,
     env,
     paramValues,
+    exprSemantics: new Map(),
     res: null,
     stmtSemantics: [],
     radSites: [],
     recSites: [],
     callSigs,
     structDefs,
+    callSummaries: options.callSummaries ?? new Map(),
   };
 
   for (let stmtIndex = 0; stmtIndex < fn.body.length; stmtIndex += 1) {
@@ -240,6 +271,7 @@ export function analyzeIrFunction(
 
   return {
     paramValues: state.paramValues,
+    exprSemantics: state.exprSemantics,
     result: state.res,
     stmtSemantics: state.stmtSemantics,
     radSites: state.radSites,
@@ -248,12 +280,59 @@ export function analyzeIrFunction(
   };
 }
 
+function bindArrayExtentValues(env: Map<string, SymValue>, type: Type, value: SymValue): void {
+  const extentNames = getArrayExtentNames(type);
+  if (!extentNames || value.kind !== "array") {
+    return;
+  }
+  const dims = arrayDims(value.array);
+  if (!dims) {
+    return;
+  }
+  for (let i = 0; i < extentNames.length; i += 1) {
+    const extentName = extentNames[i];
+    const extent = dims[i];
+    if (typeof extentName === "string" && extent) {
+      env.set(extentName, { kind: "scalar", expr: extent });
+    }
+  }
+}
+
+export function buildIrCallSummaries(
+  program: IRProgram,
+  structDefs: Map<string, IRStructDef["fields"]> = new Map(program.structs.map((struct) => [struct.name, struct.fields] as const)),
+  symbolPrefix = "",
+): Map<string, IrCallSummary> {
+  const summaries = new Map<string, IrCallSummary>();
+
+  for (const fn of program.functions) {
+    if (hasRec(fn)) {
+      continue;
+    }
+    const analysis = analyzeIrFunction(
+      fn,
+      structDefs,
+      `${symbolPrefix}${fn.name}_`,
+      { callSummaries: summaries },
+    );
+    summaries.set(fn.name, {
+      fn,
+      analysis,
+      inlineable: analysis.result !== null && !containsOpaqueValue(analysis.result),
+    });
+  }
+
+  return summaries;
+}
+
 export function proveIrSiteWithSmt(
   fn: IRFunction,
   rad: IrRadWitness,
   site: IrRecSite,
   analysis: IrFunctionAnalysis,
+  solverOptions: Z3RunOptions = {},
 ): IrSiteProof {
+  const proofSolverOptions = withHardTimeout(solverOptions);
   if (site.issues.length > 0) {
     return { ok: false, reasons: [...site.issues] };
   }
@@ -294,9 +373,12 @@ export function proveIrSiteWithSmt(
     return { ok: false, reasons: [query.reason] };
   }
 
-  const result = checkSat(query.query.baseLines);
+  const result = checkSat(query.query.baseLines, proofSolverOptions);
   if (!result.ok) {
-    return { ok: false, reasons: [`failed to invoke z3: ${result.error}`] };
+    return {
+      ok: false,
+      reasons: [result.timedOut ? `solver timed out: ${result.error}` : `failed to invoke z3: ${result.error}`],
+    };
   }
   if (result.status === "unsat") {
     return {
@@ -306,7 +388,7 @@ export function proveIrSiteWithSmt(
     };
   }
   if (result.status === "sat") {
-    const witness = queryCounterexample(query.query);
+    const witness = queryCounterexample(query.query, proofSolverOptions);
     return {
       ok: false,
       reasons: [`solver found a counterexample for '${rad.rendered}'${witness ? `: ${witness}` : ""}`],
@@ -357,7 +439,9 @@ export function checkIrStructuralDecrease(
 export function analyzeIrProofSites(
   fn: IRFunction,
   analysis: IrFunctionAnalysis = analyzeIrFunction(fn),
+  solverOptions: Z3RunOptions = {},
 ): IrProofSiteTrace[] {
+  const proofSolverOptions = withHardTimeout(solverOptions);
   return analysis.recSites.map((site, siteIndex) => {
     const obligations = analysis.radSites.map((rad) => {
       const structural = checkIrStructuralDecrease(fn.params, rad.source, site.args);
@@ -373,7 +457,7 @@ export function analyzeIrProofSites(
         };
       }
 
-      const smt = proveIrSiteWithSmt(fn, rad, site, analysis);
+      const smt = proveIrSiteWithSmt(fn, rad, site, analysis, proofSolverOptions);
       if (smt.ok) {
         return {
           rad,
@@ -528,6 +612,17 @@ function symbolizeIrExpr(
   state: AnalysisState,
   stmtIndex: number,
 ): SymValue {
+  const value = symbolizeIrExprCore(expr, fn, state, stmtIndex);
+  state.exprSemantics.set(expr.id, value);
+  return value;
+}
+
+function symbolizeIrExprCore(
+  expr: IRExpr,
+  fn: IRFunction,
+  state: AnalysisState,
+  stmtIndex: number,
+): SymValue {
   switch (expr.tag) {
     case "int_lit":
       return { kind: "scalar", expr: { tag: "int_lit", value: expr.value } };
@@ -536,14 +631,14 @@ function symbolizeIrExpr(
     case "void_lit":
       return { kind: "void", type: { tag: "void" } };
     case "var":
-      return state.env.get(expr.name) ?? { kind: "opaque", type: expr.resultType, label: expr.name };
+      return state.env.get(expr.name) ?? makeOpaque(expr.resultType, expr.name, "ir:symbolizeIrExpr:var_missing");
     case "res":
-      return state.res ?? { kind: "opaque", type: fn.retType, label: "res" };
+      return state.res ?? makeOpaque(fn.retType, "res", "ir:symbolizeIrExpr:res_missing");
     case "unop": {
       return symbolizeUnaryScalar(
         expr,
         symbolizeIrExpr(expr.operand, fn, state, stmtIndex),
-        (operand, tag) => ({ tag: "unop", op: "-", operand, valueType: tag }),
+        (operand, tag) => buildDenotationalUnaryScalarExpr(expr, operand, tag),
         stmtIndex,
       );
     }
@@ -552,7 +647,7 @@ function symbolizeIrExpr(
         expr,
         symbolizeIrExpr(expr.left, fn, state, stmtIndex),
         symbolizeIrExpr(expr.right, fn, state, stmtIndex),
-        (left, right, tag) => ({ tag: "binop", op: expr.op, left, right, valueType: tag }),
+        (left, right, tag) => buildDenotationalBinaryScalarExpr(expr, left, right, tag),
         stmtIndex,
       );
     }
@@ -598,6 +693,10 @@ function symbolizeIrExpr(
     }
     case "call": {
       const args = expr.args.map((arg) => symbolizeIrExpr(arg, fn, state, stmtIndex));
+      const summarized = tryInlineCallSummary(expr, args, state);
+      if (summarized) {
+        return summarized;
+      }
       const tag = scalarTag(expr.resultType);
       const scalarArgs = args.every((arg) => arg.kind === "scalar")
         ? args.map((arg) => (arg as Extract<SymValue, { kind: "scalar" }>).expr)
@@ -609,35 +708,38 @@ function symbolizeIrExpr(
         }
         return {
           kind: "scalar",
-          expr: {
-            tag: "call",
-            name: expr.name,
-            args: scalarArgs,
-            valueType: tag,
-            interpreted,
-          },
+          expr: buildDenotationalScalarCallExpr(expr.name, scalarArgs, tag, interpreted),
         };
       }
-      return { kind: "opaque", type: expr.resultType, label: `call_${expr.name}_${stmtIndex}` };
+      if (scalarArgs) {
+        return symbolizeAbstractValue(
+          expr.resultType,
+          `__call_${state.symbolPrefix}${expr.name}_${stmtIndex}_${expr.id}`,
+          scalarArgs,
+          state.callSigs,
+          state.structDefs,
+        );
+      }
+      return makeOpaque(expr.resultType, `call_${expr.name}_${stmtIndex}`, "ir:symbolizeIrExpr:call_non_scalar_args");
     }
     case "field": {
       const target = symbolizeIrExpr(expr.target, fn, state, stmtIndex);
       if (target.kind !== "struct") {
-        return { kind: "opaque", type: expr.resultType, label: `field_${stmtIndex}_${expr.id}` };
+        return makeOpaque(expr.resultType, `field_${stmtIndex}_${expr.id}`, "ir:symbolizeIrExpr:field_non_struct_target");
       }
       const field = target.fields.find((candidate) => candidate.name === expr.field);
-      return field?.value ?? { kind: "opaque", type: expr.resultType, label: `field_${stmtIndex}_${expr.id}` };
+      return field?.value ?? makeOpaque(expr.resultType, `field_${stmtIndex}_${expr.id}`, "ir:symbolizeIrExpr:field_missing");
     }
     case "index": {
       const arrayValue = symbolizeIrExpr(expr.array, fn, state, stmtIndex);
       if (arrayValue.kind !== "array") {
-        return { kind: "opaque", type: expr.resultType, label: `index_${stmtIndex}_${expr.id}` };
+        return makeOpaque(expr.resultType, `index_${stmtIndex}_${expr.id}`, "ir:symbolizeIrExpr:index_non_array_target");
       }
       const indices: ScalarExpr[] = [];
       for (const indexExpr of expr.indices) {
         const indexValue = symbolizeIrExpr(indexExpr, fn, state, stmtIndex);
         if (indexValue.kind !== "scalar" || scalarExprType(indexValue.expr) !== "int") {
-          return { kind: "opaque", type: expr.resultType, label: `index_${stmtIndex}_${expr.id}` };
+          return makeOpaque(expr.resultType, `index_${stmtIndex}_${expr.id}`, "ir:symbolizeIrExpr:index_non_int_index");
         }
         indices.push(indexValue.expr);
       }
@@ -665,25 +767,21 @@ function symbolizeIrExpr(
           issues.push(`could not symbolize recursive argument '${param.name}' as a scalar/array proof value`);
           continue;
         }
-        argValues.set(i, value);
+        argValues.set(i, normalizeValueForType(value, param.type));
       }
-      const retScalar = scalarTag(fn.retType);
-      const resultValue = retScalar
-        ? {
-            kind: "scalar" as const,
-            expr: {
-              tag: "var" as const,
-              name: `__rec_result_${stmtIndex}_${expr.id}`,
-              valueType: retScalar,
-            },
-          }
-        : { kind: "opaque" as const, type: fn.retType, label: `rec_${stmtIndex}_${expr.id}` };
+      const resultValue = symbolizeAbstractValue(
+        fn.retType,
+        `__rec_result_${state.symbolPrefix}${stmtIndex}_${expr.id}`,
+        [],
+        state.callSigs,
+        state.structDefs,
+      );
       state.recSites.push({
         stmtIndex,
         args: expr.args,
         argValues,
         issues,
-        ...(resultValue.kind === "scalar" ? { resultSymbol: resultValue.expr.name } : {}),
+        resultValue,
         ...(state.res !== null ? { currentRes: state.res } : {}),
       });
       return resultValue;
@@ -695,6 +793,39 @@ function symbolizeIrExpr(
   }
 }
 
+function tryInlineCallSummary(
+  expr: Extract<IRExpr, { tag: "call" }>,
+  args: SymValue[],
+  state: AnalysisState,
+): SymValue | null {
+  const summary = state.callSummaries.get(expr.name);
+  if (!summary || !summary.inlineable || !summary.analysis.result) {
+    return null;
+  }
+  if (summary.fn.params.length !== args.length) {
+    return null;
+  }
+
+  const substitution = new Map<string, SymValue>();
+  for (let i = 0; i < summary.fn.params.length; i += 1) {
+    const param = summary.fn.params[i]!;
+    const arg = normalizeValueForType(args[i]!, param.type);
+    substitution.set(param.name, arg);
+    const current = summary.analysis.paramValues.get(param.name);
+    if (current) {
+      extendSymbolicSubstitution(current, arg, substitution);
+    }
+  }
+
+  for (const [name, sig] of summary.analysis.callSigs) {
+    if (!state.callSigs.has(name)) {
+      state.callSigs.set(name, sig);
+    }
+  }
+
+  return substituteValue(summary.analysis.result, substitution);
+}
+
 function symbolizeArrayExpr(
   expr: Extract<IRExpr, { tag: "array_expr" }>,
   fn: IRFunction,
@@ -702,7 +833,7 @@ function symbolizeArrayExpr(
   stmtIndex: number,
 ): SymValue {
   if (expr.resultType.tag !== "array") {
-    return { kind: "opaque", type: expr.resultType, label: `array_expr_${stmtIndex}_${expr.id}` };
+    return makeOpaque(expr.resultType, `array_expr_${stmtIndex}_${expr.id}`, "ir:symbolizeArrayExpr:non_array_type");
   }
 
   const prepared = prepareComprehensionBindings(expr, fn, state, stmtIndex);
@@ -747,12 +878,25 @@ function symbolizeArrayCons(
   stmtIndex: number,
 ): SymValue {
   const elements = expr.elements.map((element) => symbolizeIrExpr(element, fn, state, stmtIndex));
+  const elementType = expr.resultType.tag === "array" ? expr.resultType.element : expr.resultType;
+  const indexVar = {
+    kind: "scalar" as const,
+    expr: {
+      tag: "var" as const,
+      name: `jplmm_array_cons_${stmtIndex}_${expr.id}`,
+      valueType: "int" as const,
+    },
+  };
   return {
     kind: "array",
     array: {
-      tag: "literal",
+      tag: "comprehension",
       arrayType: expr.resultType,
-      elements,
+      bindings: [{
+        name: indexVar.expr.name,
+        extent: { tag: "int_lit", value: Math.max(1, elements.length) },
+      }],
+      body: selectValue(indexVar.expr, elements, elementType, stmtIndex, expr.id),
     },
   };
 }
@@ -763,6 +907,10 @@ function symbolizeSumExpr(
   state: AnalysisState,
   stmtIndex: number,
 ): SymValue {
+  const unrolled = tryUnrollIrSumExpr(expr);
+  if (unrolled) {
+    return symbolizeIrExpr(unrolled, fn, state, stmtIndex);
+  }
   const prepared = prepareComprehensionBindings(expr, fn, state, stmtIndex);
   if (!prepared.ok) {
     return prepared.value;
@@ -770,7 +918,7 @@ function symbolizeSumExpr(
   const body = symbolizeIrExpr(expr.body, fn, prepared.localState, stmtIndex);
   const tag = scalarTag(expr.resultType);
   if (body.kind !== "scalar" || !tag) {
-    return { kind: "opaque", type: expr.resultType, label: `sum_expr_${stmtIndex}_${expr.id}` };
+    return makeOpaque(expr.resultType, `sum_expr_${stmtIndex}_${expr.id}`, "ir:symbolizeSumExpr:non_scalar_body");
   }
   return {
     kind: "scalar",
@@ -781,6 +929,418 @@ function symbolizeSumExpr(
       valueType: tag,
     },
   };
+}
+
+function tryUnrollIrSumExpr(
+  expr: Extract<IRExpr, { tag: "sum_expr" }>,
+  maxTerms = 16,
+): IRExpr | null {
+  const extents = expr.bindings.map((binding) => constantIrPositiveExtent(binding.expr));
+  if (extents.some((extent) => extent === null)) {
+    return null;
+  }
+  let termCount = 1;
+  for (const extent of extents) {
+    termCount *= extent!;
+    if (termCount > maxTerms) {
+      return null;
+    }
+  }
+
+  const terms: IRExpr[] = [];
+  const freshIds = { next: expr.id * 1000 + 1 };
+  expandIrSumTerms(expr, 0, new Map(), terms, freshIds);
+  if (terms.length === 0) {
+    return expr.resultType.tag === "float"
+      ? { tag: "float_lit", value: 0, id: expr.id, resultType: expr.resultType }
+      : { tag: "int_lit", value: 0, id: expr.id, resultType: expr.resultType };
+  }
+
+  let acc = terms[0]!;
+  for (let i = 1; i < terms.length; i += 1) {
+    acc = expr.resultType.tag === "float"
+      ? {
+          tag: "binop",
+          op: "+",
+          left: acc,
+          right: terms[i]!,
+          id: freshIds.next,
+          resultType: expr.resultType,
+        }
+      : {
+          tag: "sat_add",
+          left: acc,
+          right: terms[i]!,
+          id: freshIds.next,
+          resultType: expr.resultType,
+        };
+    freshIds.next += 1;
+  }
+  return acc;
+}
+
+function expandIrSumTerms(
+  expr: Extract<IRExpr, { tag: "sum_expr" }>,
+  bindingIndex: number,
+  substitution: Map<string, IRExpr>,
+  out: IRExpr[],
+  freshIds: { next: number },
+): void {
+  if (bindingIndex >= expr.bindings.length) {
+    out.push(freshenIrExpr(substituteIrExpr(expr.body, substitution), freshIds));
+    return;
+  }
+  const binding = expr.bindings[bindingIndex]!;
+  const extent = constantIrPositiveExtent(binding.expr);
+  if (extent === null) {
+    return;
+  }
+  for (let i = 0; i < extent; i += 1) {
+    const nextSubstitution = new Map(substitution);
+    nextSubstitution.set(binding.name, {
+      tag: "int_lit",
+      value: i,
+      id: binding.expr.id,
+      resultType: { tag: "int" },
+    });
+    expandIrSumTerms(expr, bindingIndex + 1, nextSubstitution, out, freshIds);
+  }
+}
+
+function substituteIrExpr(expr: IRExpr, substitution: Map<string, IRExpr>): IRExpr {
+  switch (expr.tag) {
+    case "int_lit":
+    case "float_lit":
+    case "void_lit":
+    case "res":
+      return expr;
+    case "var":
+      return substitution.get(expr.name) ?? expr;
+    case "binop":
+    case "sat_add":
+    case "sat_sub":
+    case "sat_mul":
+    case "total_div":
+    case "total_mod":
+      return {
+        ...expr,
+        left: substituteIrExpr(expr.left, substitution),
+        right: substituteIrExpr(expr.right, substitution),
+      };
+    case "unop":
+    case "sat_neg":
+      return {
+        ...expr,
+        operand: substituteIrExpr(expr.operand, substitution),
+      };
+    case "nan_to_zero":
+      return {
+        ...expr,
+        value: substituteIrExpr(expr.value, substitution),
+      };
+    case "call":
+      return {
+        ...expr,
+        args: expr.args.map((arg) => substituteIrExpr(arg, substitution)),
+      };
+    case "index":
+      return {
+        ...expr,
+        array: substituteIrExpr(expr.array, substitution),
+        indices: expr.indices.map((index) => substituteIrExpr(index, substitution)),
+      };
+    case "field":
+      return {
+        ...expr,
+        target: substituteIrExpr(expr.target, substitution),
+      };
+    case "struct_cons":
+      return {
+        ...expr,
+        fields: expr.fields.map((field) => substituteIrExpr(field, substitution)),
+      };
+    case "array_cons":
+      return {
+        ...expr,
+        elements: expr.elements.map((element) => substituteIrExpr(element, substitution)),
+      };
+    case "array_expr":
+    case "sum_expr": {
+      const inner = new Map(substitution);
+      for (const binding of expr.bindings) {
+        inner.delete(binding.name);
+      }
+      return {
+        ...expr,
+        bindings: expr.bindings.map((binding) => ({
+          name: binding.name,
+          expr: substituteIrExpr(binding.expr, substitution),
+        })),
+        body: substituteIrExpr(expr.body, inner),
+      };
+    }
+    case "rec":
+      return {
+        ...expr,
+        args: expr.args.map((arg) => substituteIrExpr(arg, substitution)),
+      };
+    default: {
+      const _never: never = expr;
+      return _never;
+    }
+  }
+}
+
+function freshenIrExpr(expr: IRExpr, freshIds: { next: number }): IRExpr {
+  const id = freshIds.next;
+  freshIds.next += 1;
+  switch (expr.tag) {
+    case "int_lit":
+    case "float_lit":
+    case "void_lit":
+    case "var":
+    case "res":
+      return { ...expr, id };
+    case "binop":
+    case "sat_add":
+    case "sat_sub":
+    case "sat_mul":
+    case "total_div":
+    case "total_mod":
+      return {
+        ...expr,
+        id,
+        left: freshenIrExpr(expr.left, freshIds),
+        right: freshenIrExpr(expr.right, freshIds),
+      };
+    case "unop":
+    case "sat_neg":
+      return {
+        ...expr,
+        id,
+        operand: freshenIrExpr(expr.operand, freshIds),
+      };
+    case "nan_to_zero":
+      return {
+        ...expr,
+        id,
+        value: freshenIrExpr(expr.value, freshIds),
+      };
+    case "call":
+      return {
+        ...expr,
+        id,
+        args: expr.args.map((arg) => freshenIrExpr(arg, freshIds)),
+      };
+    case "index":
+      return {
+        ...expr,
+        id,
+        array: freshenIrExpr(expr.array, freshIds),
+        indices: expr.indices.map((index) => freshenIrExpr(index, freshIds)),
+      };
+    case "field":
+      return {
+        ...expr,
+        id,
+        target: freshenIrExpr(expr.target, freshIds),
+      };
+    case "struct_cons":
+      return {
+        ...expr,
+        id,
+        fields: expr.fields.map((field) => freshenIrExpr(field, freshIds)),
+      };
+    case "array_cons":
+      return {
+        ...expr,
+        id,
+        elements: expr.elements.map((element) => freshenIrExpr(element, freshIds)),
+      };
+    case "array_expr":
+    case "sum_expr":
+      return {
+        ...expr,
+        id,
+        bindings: expr.bindings.map((binding) => ({
+          name: binding.name,
+          expr: freshenIrExpr(binding.expr, freshIds),
+        })),
+        body: freshenIrExpr(expr.body, freshIds),
+      };
+    case "rec":
+      return {
+        ...expr,
+        id,
+        args: expr.args.map((arg) => freshenIrExpr(arg, freshIds)),
+      };
+    default: {
+      const _never: never = expr;
+      return _never;
+    }
+  }
+}
+
+function constantIrPositiveExtent(expr: IRExpr): number | null {
+  const value = constantIrIntValue(expr);
+  if (value === null) {
+    return null;
+  }
+  return Math.max(1, Math.min(2147483647, Math.max(-2147483648, Math.trunc(value))));
+}
+
+function constantIrIntValue(expr: IRExpr): number | null {
+  switch (expr.tag) {
+    case "int_lit":
+      return expr.value;
+    case "binop":
+      if (expr.resultType.tag !== "int") {
+        return null;
+      }
+      return constantIrIntBinop(expr.op, expr.left, expr.right);
+    case "sat_add":
+    case "sat_sub":
+    case "sat_mul": {
+      const left = constantIrIntValue(expr.left);
+      const right = constantIrIntValue(expr.right);
+      if (left === null || right === null) {
+        return null;
+      }
+      if (expr.tag === "sat_add") {
+        return clampIrInt32(left + right);
+      }
+      if (expr.tag === "sat_sub") {
+        return clampIrInt32(left - right);
+      }
+      return clampIrInt32(left * right);
+    }
+    case "sat_neg": {
+      const operand = constantIrIntValue(expr.operand);
+      return operand === null ? null : clampIrInt32(-operand);
+    }
+    case "total_div":
+      return constantIrIntBinop("/", expr.left, expr.right);
+    case "total_mod":
+      return constantIrIntBinop("%", expr.left, expr.right);
+    case "call":
+      return constantIrInterpretedIntCall(expr);
+    default:
+      return null;
+  }
+}
+
+function constantIrIntBinop(
+  op: string,
+  leftExpr: IRExpr,
+  rightExpr: IRExpr,
+): number | null {
+  const left = constantIrIntValue(leftExpr);
+  const right = constantIrIntValue(rightExpr);
+  if (left === null || right === null) {
+    return null;
+  }
+  if (op === "+") {
+    return clampIrInt32(left + right);
+  }
+  if (op === "-") {
+    return clampIrInt32(left - right);
+  }
+  if (op === "*") {
+    return clampIrInt32(left * right);
+  }
+  if (right === 0) {
+    return 0;
+  }
+  const quotient = Math.trunc(left / right);
+  if (op === "/") {
+    return clampIrInt32(quotient);
+  }
+  if (op === "%") {
+    return clampIrInt32(left - right * quotient);
+  }
+  return null;
+}
+
+function constantIrInterpretedIntCall(expr: Extract<IRExpr, { tag: "call" }>): number | null {
+  if (expr.name === "abs" && expr.args.length === 1) {
+    const value = constantIrIntValue(expr.args[0]!);
+    return value === null ? null : Math.abs(value);
+  }
+  if ((expr.name === "max" || expr.name === "min") && expr.args.length === 2) {
+    const left = constantIrIntValue(expr.args[0]!);
+    const right = constantIrIntValue(expr.args[1]!);
+    if (left === null || right === null) {
+      return null;
+    }
+    return expr.name === "max" ? Math.max(left, right) : Math.min(left, right);
+  }
+  if (expr.name === "clamp" && expr.args.length === 3) {
+    const value = constantIrIntValue(expr.args[0]!);
+    const lo = constantIrIntValue(expr.args[1]!);
+    const hi = constantIrIntValue(expr.args[2]!);
+    if (value === null || lo === null || hi === null) {
+      return null;
+    }
+    return Math.min(Math.max(value, lo), hi);
+  }
+  return null;
+}
+
+function clampIrInt32(value: number): number {
+  return Math.max(-2147483648, Math.min(2147483647, Math.trunc(value)));
+}
+
+function containsOpaqueValue(value: SymValue): boolean {
+  switch (value.kind) {
+    case "scalar":
+    case "void":
+      return false;
+    case "opaque":
+      return true;
+    case "struct":
+      return value.fields.some((field) => containsOpaqueValue(field.value));
+    case "array":
+      return containsOpaqueArray(value.array);
+    default: {
+      const _never: never = value;
+      return _never;
+    }
+  }
+}
+
+function containsOpaqueArray(array: SymArray): boolean {
+  switch (array.tag) {
+    case "param":
+    case "abstract":
+      return containsOpaqueLeafModel(array.leafModel);
+    case "slice":
+      return containsOpaqueArray(array.base);
+    case "literal":
+      return array.elements.some(containsOpaqueValue);
+    case "choice":
+      return array.options.some(containsOpaqueArray);
+    case "comprehension":
+      return containsOpaqueValue(array.body);
+    default: {
+      const _never: never = array;
+      return _never;
+    }
+  }
+}
+
+function containsOpaqueLeafModel(model: SymLeafModel): boolean {
+  switch (model.kind) {
+    case "scalar":
+      return false;
+    case "opaque":
+      return true;
+    case "struct":
+      return model.fields.some((field) => containsOpaqueLeafModel(field.model));
+    default: {
+      const _never: never = model;
+      return _never;
+    }
+  }
 }
 
 function symbolizeUnaryScalar<T extends ScalarExpr>(
@@ -797,7 +1357,7 @@ function symbolizeUnaryScalar<T extends ScalarExpr>(
       expr: build(operand.expr, tag ?? scalarExprType(operand.expr)),
     };
   }
-  return { kind: "opaque", type: expr.resultType, label: `${expr.tag}_${stmtIndex}_${expr.id}` };
+  return makeOpaque(expr.resultType, `${expr.tag}_${stmtIndex}_${expr.id}`, "ir:symbolizeUnaryScalar:fallback");
 }
 
 function symbolizeBinaryScalar<T extends ScalarExpr>(
@@ -815,7 +1375,7 @@ function symbolizeBinaryScalar<T extends ScalarExpr>(
       expr: build(left.expr, right.expr, tag ?? scalarExprType(left.expr)),
     };
   }
-  return { kind: "opaque", type: expr.resultType, label: `${expr.tag}_${stmtIndex}_${expr.id}` };
+  return makeOpaque(expr.resultType, `${expr.tag}_${stmtIndex}_${expr.id}`, "ir:symbolizeBinaryScalar:fallback");
 }
 
 function prepareComprehensionBindings(
@@ -834,7 +1394,7 @@ function prepareComprehensionBindings(
     if (extentValue.kind !== "scalar" || scalarExprType(extentValue.expr) !== "int") {
       return {
         ok: false,
-        value: { kind: "opaque", type: expr.resultType, label: `${expr.tag}_${stmtIndex}_${expr.id}` },
+        value: makeOpaque(expr.resultType, `${expr.tag}_${stmtIndex}_${expr.id}`, "ir:prepareComprehensionBindings:non_int_extent"),
       };
     }
     bindings.push({
@@ -847,6 +1407,82 @@ function prepareComprehensionBindings(
     });
   }
   return { ok: true, localState, bindings };
+}
+
+function buildDenotationalUnaryScalarExpr(
+  expr: Extract<IRExpr, { tag: "unop" }>,
+  operand: ScalarExpr,
+  tag: ScalarTag,
+): ScalarExpr {
+  if (tag === "int" && expr.op === "-") {
+    return { tag: "sat_neg", operand };
+  }
+  return { tag: "unop", op: expr.op, operand, valueType: tag };
+}
+
+function buildDenotationalBinaryScalarExpr(
+  expr: Extract<IRExpr, { tag: "binop" }>,
+  left: ScalarExpr,
+  right: ScalarExpr,
+  tag: ScalarTag,
+): ScalarExpr {
+  if (expr.op === "/" || expr.op === "%") {
+    if (isZeroScalarLiteral(right)) {
+      return zeroScalarLiteral(tag);
+    }
+    const totalExpr: ScalarExpr = {
+      tag: expr.op === "/" ? "total_div" : "total_mod",
+      left,
+      right,
+      valueType: tag,
+    };
+    return tag === "float" ? { tag: "nan_to_zero", value: totalExpr } : totalExpr;
+  }
+
+  if (tag === "int") {
+    if (expr.op === "+") {
+      return { tag: "sat_add", left, right };
+    }
+    if (expr.op === "-") {
+      return { tag: "sat_sub", left, right };
+    }
+    if (expr.op === "*") {
+      return { tag: "sat_mul", left, right };
+    }
+  }
+
+  const baseExpr: ScalarExpr = { tag: "binop", op: expr.op, left, right, valueType: tag };
+  if (tag === "float" && (expr.op === "+" || expr.op === "-" || expr.op === "*")) {
+    return { tag: "nan_to_zero", value: baseExpr };
+  }
+  return baseExpr;
+}
+
+function buildDenotationalScalarCallExpr(
+  name: string,
+  args: ScalarExpr[],
+  tag: ScalarTag,
+  interpreted: boolean,
+): ScalarExpr {
+  const callExpr: ScalarExpr = {
+    tag: "call",
+    name,
+    args,
+    valueType: tag,
+    interpreted,
+  };
+  if (tag === "float" && NAN_GUARDED_BUILTINS.has(name)) {
+    return { tag: "nan_to_zero", value: callExpr };
+  }
+  return callExpr;
+}
+
+function isZeroScalarLiteral(expr: ScalarExpr): boolean {
+  return (expr.tag === "int_lit" || expr.tag === "float_lit") && expr.value === 0;
+}
+
+function zeroScalarLiteral(tag: ScalarTag): ScalarExpr {
+  return tag === "float" ? { tag: "float_lit", value: 0 } : { tag: "int_lit", value: 0 };
 }
 
 function trackedParam(params: Param[], radExpr: IRExpr): { name: string; index: number; absolute: boolean } | null {
@@ -980,20 +1616,7 @@ export function renderIrExpr(expr: IRExpr): string {
 }
 
 export function renderType(type: Type): string {
-  switch (type.tag) {
-    case "int":
-    case "float":
-    case "void":
-      return type.tag;
-    case "named":
-      return type.name;
-    case "array":
-      return `${renderType(type.element)}${"[]".repeat(type.dims)}`;
-    default: {
-      const _never: never = type;
-      return _never;
-    }
-  }
+  return renderDeclaredType(type);
 }
 
 function unique(values: string[]): string[] {

@@ -54,8 +54,8 @@ or loop variables get special treatment. Which is it?
 **Q4. `res` type vs `rad` type constraint**
 
 The spec says "`rad <expr>` — the expression must have type `int` or `float`."
-A function can return a struct or array. If the function returns `float[,]`,
-then `res` has type `float[,]`, which cannot appear in `rad` directly. The
+A function can return a struct or array. If the function returns `float(,)`,
+then `res` has type `float(,)`, which cannot appear in `rad` directly. The
 Babylonian example uses `rad g - res` where the return type is `float`, so it
 works. But what if a programmer writes `rad res` in a function returning a
 struct? The typecheck correctly rejects it. Is there a meaningful constraint

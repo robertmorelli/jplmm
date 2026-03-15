@@ -1,4 +1,4 @@
-import type { Type } from "@jplmm/ast";
+import { type Type } from "@jplmm/ast";
 import type { IRExpr, IRProgram, IRStmt } from "@jplmm/ir";
 import type { LutImplementation, OptimizeArtifacts } from "@jplmm/optimize";
 export * from "./native";

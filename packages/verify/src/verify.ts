@@ -3,28 +3,41 @@ import { typecheckProgram } from "@jplmm/frontend";
 import {
   analyzeIrFunction,
   analyzeIrProofSites,
+  buildIrCallSummaries,
   buildCanonicalProgram,
   hasRec,
 } from "@jplmm/proof";
+import type { Z3RunOptions } from "@jplmm/smt";
 import type {
   ProofMethod,
   ProofResult,
   VerificationDiagnostic,
   VerificationFunctionTrace,
+  VerificationOptions,
   VerificationOutput,
 } from "./types";
 
-export function verifyProgram(program: Program, typeMap?: Map<number, Type>): VerificationOutput {
+const DEFAULT_PROOF_TIMEOUT_MS = 2000;
+
+export function verifyProgram(
+  program: Program,
+  typeMap?: Map<number, Type>,
+  options: VerificationOptions = {},
+): VerificationOutput {
   const proofMap = new Map<string, ProofResult>();
   const diagnostics: VerificationDiagnostic[] = [];
   const effectiveTypeMap = typeMap ?? typecheckProgram(program).typeMap;
   const canonical = buildCanonicalProgram(program, effectiveTypeMap);
   const canonicalFns = new Map(canonical.functions.map((fn) => [fn.name, fn] as const));
   const structDefs = new Map(canonical.structs.map((struct) => [struct.name, struct.fields] as const));
+  const callSummaries = buildIrCallSummaries(canonical, structDefs, "verify_call_");
   const traceMap = new Map<string, VerificationFunctionTrace>();
+  const proofTimeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
+  const solverOptions: Z3RunOptions =
+    proofTimeoutMs === undefined ? {} : { timeoutMs: proofTimeoutMs };
 
   for (const fn of canonical.functions) {
-    const analysis = analyzeIrFunction(fn, structDefs);
+    const analysis = analyzeIrFunction(fn, structDefs, "", { callSummaries });
     traceMap.set(fn.name, {
       fnName: fn.name,
       canonical: fn,
@@ -33,7 +46,7 @@ export function verifyProgram(program: Program, typeMap?: Map<number, Type>): Ve
       result: analysis.result,
       stmtSemantics: analysis.stmtSemantics,
       radSites: analysis.radSites,
-      proofSites: analyzeIrProofSites(fn, analysis),
+      proofSites: analyzeIrProofSites(fn, analysis, solverOptions),
       callSigs: analysis.callSigs,
     });
   }
@@ -44,7 +57,7 @@ export function verifyProgram(program: Program, typeMap?: Map<number, Type>): Ve
       continue;
     }
     const trace = traceMap.get(fn.name) ?? null;
-    const result = verifyFunction(fn.name, canonicalFns.get(fn.name) ?? null, trace, diagnostics);
+    const result = verifyFunction(fn.name, canonicalFns.get(fn.name) ?? null, trace, diagnostics, solverOptions);
     if (result) {
       proofMap.set(fn.name, result);
     }
@@ -58,6 +71,7 @@ function verifyFunction(
   fn: import("@jplmm/ir").IRFunction | null,
   trace: VerificationFunctionTrace | null,
   diagnostics: VerificationDiagnostic[],
+  solverOptions: Z3RunOptions,
 ): ProofResult | null {
   if (!fn || !hasRec(fn)) {
     return null;
@@ -111,7 +125,7 @@ function verifyFunction(
 
   const methods: ProofMethod[] = [];
   const details: string[] = [];
-  const siteTraces = trace?.proofSites ?? analyzeIrProofSites(fn, analysis);
+  const siteTraces = trace?.proofSites ?? analyzeIrProofSites(fn, analysis, solverOptions);
 
   for (const trace of siteTraces) {
     const winner = trace.obligations.find((obligation) => obligation.proved) ?? null;
@@ -150,4 +164,14 @@ function unwrapTimedDefinition<TTag extends "fn_def">(
     return cmd.cmd as Extract<Cmd, { tag: TTag }>;
   }
   return null;
+}
+
+function resolveProofTimeoutMs(proofTimeoutMs: number | undefined): number | undefined {
+  if (proofTimeoutMs === undefined) {
+    return DEFAULT_PROOF_TIMEOUT_MS;
+  }
+  if (!Number.isFinite(proofTimeoutMs) || proofTimeoutMs <= 0) {
+    return DEFAULT_PROOF_TIMEOUT_MS;
+  }
+  return Math.min(2000, Math.max(1, Math.floor(proofTimeoutMs)));
 }

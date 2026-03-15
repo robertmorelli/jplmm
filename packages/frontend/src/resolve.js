@@ -1,4 +1,7 @@
+import { getArrayExtentNames, getScalarBounds, scalarTag } from "@jplmm/ast";
 import { error, warning } from "./errors";
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
 const BUILTIN_FUNCTIONS = new Set([
     "sqrt",
     "exp",
@@ -54,7 +57,11 @@ function resolveStructDef(cmd, diagnostics, definedStructs) {
             diagnostics.push(nodeError(field, `Duplicate field '${field.name}' in struct '${cmd.name}'`, "DUP_FIELD"));
         }
         fieldNames.add(field.name);
-        resolveType(field.type, diagnostics, definedStructs);
+        resolveType(field.type, diagnostics, definedStructs, {
+            allowScalarBounds: false,
+            allowArrayExtentNames: false,
+            location: "struct field",
+        });
     }
     definedStructs.add(cmd.name);
 }
@@ -69,9 +76,17 @@ function resolveFnDef(cmd, diagnostics, definedFns, definedStructs) {
         diagnostics.push(nodeError(cmd, "Function 'main' must not take parameters", "MAIN_ARITY"));
     }
     for (const param of cmd.params) {
-        resolveType(param.type, diagnostics, definedStructs);
+        resolveType(param.type, diagnostics, definedStructs, {
+            allowScalarBounds: true,
+            allowArrayExtentNames: true,
+            location: "parameter",
+        });
     }
-    resolveType(cmd.retType, diagnostics, definedStructs);
+    resolveType(cmd.retType, diagnostics, definedStructs, {
+        allowScalarBounds: false,
+        allowArrayExtentNames: false,
+        location: "return type",
+    });
     resolveFunction(cmd, diagnostics, definedFns, definedStructs);
     if (cmd.keyword !== "ref") {
         definedFns.add(cmd.name);
@@ -107,6 +122,16 @@ function resolveFunction(cmd, diagnostics, definedFns, definedStructs) {
             diagnostics.push(nodeError(p, `Duplicate parameter '${p.name}' in '${cmd.name}'`, "DUP_PARAM"));
         }
         scope.add(p.name);
+        for (const extentName of getArrayExtentNames(p.type) ?? []) {
+            if (extentName === null) {
+                continue;
+            }
+            if (scope.has(extentName)) {
+                diagnostics.push(nodeError(p.type, `Duplicate parameter or extent binder '${extentName}' in '${cmd.name}'`, "DUP_PARAM"));
+                continue;
+            }
+            scope.add(extentName);
+        }
     }
     const ctx = {
         fnName: cmd.name,
@@ -328,13 +353,54 @@ function resolveBindings(bindings, diagnostics, definedFns, definedStructs, pare
     }
     resolveExpr(body, diagnostics, definedFns, definedStructs, localScope, fnCtx);
 }
-function resolveType(type, diagnostics, definedStructs) {
+function resolveType(type, diagnostics, definedStructs, options) {
+    const bounds = getScalarBounds(type);
+    if (bounds) {
+        validateScalarBounds(type, diagnostics);
+        if (!options.allowScalarBounds) {
+            diagnostics.push(nodeError(type, `Bounded scalar types are only allowed on direct function parameters, not in ${options.location}`, "TYPE_BOUND_TARGET"));
+        }
+    }
     if (type.tag === "array") {
-        resolveType(type.element, diagnostics, definedStructs);
+        const extentNames = getArrayExtentNames(type);
+        if (extentNames && !options.allowArrayExtentNames) {
+            diagnostics.push(nodeError(type, `Named array extents are only allowed on direct function parameters, not in ${options.location}`, "TYPE_EXTENT_TARGET"));
+        }
+        resolveType(type.element, diagnostics, definedStructs, {
+            allowScalarBounds: false,
+            allowArrayExtentNames: false,
+            location: `${options.location} array element`,
+        });
         return;
     }
     if (type.tag === "named" && !definedStructs.has(type.name)) {
         diagnostics.push(nodeError(type, `Unknown type '${type.name}'`, "TYPE_UNKNOWN"));
+    }
+}
+function validateScalarBounds(type, diagnostics) {
+    const tag = scalarTag(type);
+    const bounds = getScalarBounds(type);
+    if (!tag || !bounds) {
+        return;
+    }
+    if (tag === "int") {
+        const loOk = bounds.lo === null || (Number.isInteger(bounds.lo) && bounds.lo >= INT32_MIN && bounds.lo <= INT32_MAX);
+        const hiOk = bounds.hi === null || (Number.isInteger(bounds.hi) && bounds.hi >= INT32_MIN && bounds.hi <= INT32_MAX);
+        if (!loOk || !hiOk) {
+            diagnostics.push(nodeError(type, "int bounds must stay inside the 32-bit scalar domain", "TYPE_BOUND_RANGE"));
+            return;
+        }
+    }
+    else {
+        const loOk = bounds.lo === null || Number.isFinite(bounds.lo);
+        const hiOk = bounds.hi === null || Number.isFinite(bounds.hi);
+        if (!loOk || !hiOk) {
+            diagnostics.push(nodeError(type, "float bounds must be finite literals", "TYPE_BOUND_RANGE"));
+            return;
+        }
+    }
+    if (bounds.lo !== null && bounds.hi !== null && bounds.lo > bounds.hi) {
+        diagnostics.push(nodeError(type, "scalar lower bound must be <= upper bound", "TYPE_BOUND_ORDER"));
     }
 }
 function reportUnusedLets(program, diagnostics) {

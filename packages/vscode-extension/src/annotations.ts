@@ -2,6 +2,12 @@ import type { Cmd, Expr, Program, Stmt } from "@jplmm/ast";
 import type { RefinementReport } from "@jplmm/frontend";
 import type { FunctionMetrics, VerificationDiagnostic } from "@jplmm/verify";
 
+type SourceFunctionSite = {
+  name: string;
+  start: number;
+  end: number;
+};
+
 export type FunctionMetricAnnotation = {
   name: string;
   start: number;
@@ -48,15 +54,45 @@ export function collectFunctionMetricAnnotations(
   return annotations;
 }
 
+export function collectSourceFunctionMetricAnnotations(
+  functions: ReadonlyArray<SourceFunctionSite>,
+  metrics: Map<string, FunctionMetrics>,
+): FunctionMetricAnnotation[] {
+  return functions.flatMap((fn) => {
+    const metric = metrics.get(fn.name);
+    if (!metric) {
+      return [];
+    }
+    return [{
+      name: fn.name,
+      start: fn.start,
+      end: fn.end,
+      label: `complexity ${metric.sourceComplexity} | 100% line coverage via ${metric.canonicalWitness}`,
+    }];
+  });
+}
+
 export function collectFunctionRefinementAnnotations(refinements: RefinementReport[]): FunctionRefinementAnnotation[] {
-  return refinements
-    .filter((refinement) => refinement.refStart !== undefined)
-    .map((refinement) => ({
-      name: refinement.fnName,
-      start: refinement.refStart ?? 0,
-      end: refinement.refEnd ?? refinement.refStart ?? 0,
-      label: refinementLabel(refinement),
-    }));
+  const annotations: FunctionRefinementAnnotation[] = [];
+  for (const refinement of refinements) {
+    if (refinement.baselineStart !== undefined) {
+      annotations.push({
+        name: refinement.fnName,
+        start: refinement.baselineStart,
+        end: refinement.baselineEnd ?? refinement.baselineStart,
+        label: baselineRefinementLabel(refinement),
+      });
+    }
+    if (refinement.refStart !== undefined) {
+      annotations.push({
+        name: refinement.fnName,
+        start: refinement.refStart,
+        end: refinement.refEnd ?? refinement.refStart,
+        label: refinementLabel(refinement),
+      });
+    }
+  }
+  return annotations;
 }
 
 export function canAnnotateInlineOutResults(program: Program): boolean {
@@ -140,15 +176,30 @@ function refinementLabel(refinement: RefinementReport): string {
   return "invalid refinement";
 }
 
+function baselineRefinementLabel(refinement: RefinementReport): string {
+  if (refinement.status === "equivalent") {
+    return `refined by later ref${refinement.method ? ` via ${renderRefinementMethod(refinement.method)}` : ""}`;
+  }
+  if (refinement.status === "mismatch") {
+    return "later ref mismatched";
+  }
+  if (refinement.status === "unproven") {
+    return "later ref unproven";
+  }
+  return "later ref invalid";
+}
+
 function renderRefinementMethod(method: NonNullable<RefinementReport["method"]>): string {
   switch (method) {
     case "canonical":
       return "canonical equivalence";
     case "exact_zero_arity":
       return "exact execution";
-    case "scalar_int_smt":
-      return "SMT";
-    case "scalar_int_recursive_induction":
+    case "symbolic_value_alpha":
+      return "shared symbolic identity";
+    case "symbolic_value_smt":
+      return "shared symbolic SMT";
+    case "symbolic_recursive_induction":
       return "recursive induction";
     default:
       return method;

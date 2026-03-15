@@ -29,7 +29,7 @@ adding `i` to the scope before entering the inner `array`, so the inner `i`
 shadows and is rejected.
 
 **C4. `rad` scalar requirement for composite-return functions.**
-`rad` must be `int` or `float`. A function returning `float[,]` can still use
+`rad` must be `int` or `float`. A function returning `float(,)` can still use
 `rad`, but must formulate the measure over scalar parameters or derived scalars
 — not raw `res`. E.g. `rad to_int(sum[i:H, j:W] abs(res[i,j] - params.prev[i,j]))`.
 Both existing answers agree.

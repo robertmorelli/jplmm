@@ -5,8 +5,23 @@
       "name": "Run JPLMM Extension",
       "type": "extensionHost",
       "request": "launch",
+      "smartStep": true,
       "args": [
+        // "--disable-extensions",
         "--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-extension"
+      ],
+      "skipFiles": [
+        "<node_internals>/**",
+        "${workspaceFolder}/node_modules/**/*.js",
+        "${workspaceFolder}/packages/*/node_modules/**/*.js",
+        "**/Contents/Resources/app/**/*.js",
+        "${env:HOME}/.vscode/extensions/**/*.js",
+        "${env:HOME}/.vscode-insiders/extensions/**/*.js"
+      ],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/packages/vscode-extension/dist/**/*.map",
+        "!**/node_modules/**",
+        "!**/Contents/Resources/app/**"
       ],
       "outFiles": [
         "${workspaceFolder}/packages/vscode-extension/dist/**/*.js",

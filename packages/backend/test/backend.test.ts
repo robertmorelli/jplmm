@@ -92,6 +92,22 @@ describe("@jplmm/backend", () => {
     expect(semantics.helperSemantics.jplmm_total_div_i32).toContain("returns 0");
   });
 
+  it("materializes named array extents as Wasm locals", () => {
+    const wat = emitWatModule(compile(`
+      fn shape(a:int[n][m]): int {
+        ret n * 100 + m;
+      }
+    `), {
+      exportFunctions: true,
+    });
+
+    expect(wat).toContain("(local $n i32)");
+    expect(wat).toContain("(local $m i32)");
+    expect(wat).toContain("call $jplmm_array_dim");
+    expect(wat).toContain("local.set $n");
+    expect(wat).toContain("local.set $m");
+  });
+
   it("executes loop-lowered tail recursion when tail calls are disabled", async () => {
     const { wat, instance } = await compileInstance(
       `
@@ -144,7 +160,7 @@ describe("@jplmm/backend", () => {
   it("includes debug comments in emitted wat when requested", () => {
     const optimized = optimizeProgram(
       compile(`
-        fn steps(x:int): int {
+        fn steps(x:int(0,_)): int {
           ret 0;
           ret rec(max(0, x - 1)) + 1;
           rad x;
@@ -205,7 +221,7 @@ describe("@jplmm/backend", () => {
 
   it("lowers closed-form implementations into specialized backend code", async () => {
     const { optimized, wat, instance } = await compileInstance(`
-      fn steps(x:int): int {
+      fn steps(x:int(0,_)): int {
         ret 0;
         ret rec(max(0, x - 1)) + 1;
         rad x;
@@ -234,6 +250,24 @@ describe("@jplmm/backend", () => {
     expect(clampHi(-5)).toBe(0);
     expect(clampHi(300)).toBe(255);
     expect(wat.match(/\(func \$clamp_hi/g)?.length ?? 0).toBe(1);
+  });
+
+  it("compiles non-recursive shared-symbolic refs that use array closures", async () => {
+    const { wat, instance } = await compileInstance(`
+      fun foo(a:int): int {
+        ret 1;
+      }
+
+      ref foo(a:int): int {
+        ret (array[i:10] 1)[a];
+      }
+    `);
+    const foo = exportedFunction<(x: number) => number>(instance, "foo");
+
+    expect(foo(-5)).toBe(1);
+    expect(foo(3)).toBe(1);
+    expect(foo(999)).toBe(1);
+    expect(wat.match(/\(func \$foo/g)?.length ?? 0).toBe(1);
   });
 
   it("compiles recursively-proven ref definitions down to the refined implementation", async () => {
@@ -307,27 +341,18 @@ describe("@jplmm/backend", () => {
     expect(wat.match(/\(func \$countdown/g)?.length ?? 0).toBe(1);
   });
 
-  it("compiles recursive refs when an array literal acts as a lookup closure", async () => {
+  it("compiles bounded recursive refs with post-normalized collapse semantics", async () => {
     const { wat, instance } = await compileInstance(`
-      fun fib(x:int): int {
-        let a = max(0, x);
-        let b = min(1, a);
-        ret b;
+      fun fib(x:int(0,_)): int {
+        ret clamp(x, 0, 1);
         ret max(res, rec(max(0, x - 1)) + rec(max(0, x - 2)));
-        rad abs(x);
+        rad x;
       }
 
-      ref fib(x:int): int {
-        let safe_x = clamp(x, 0, 47);
-        let table = [
-          0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610,
-          987, 1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025,
-          121393, 196418, 317811, 514229, 832040, 1346269, 2178309,
-          3524578, 5702887, 9227465, 14930352, 24157817, 39088169,
-          63245986, 102334155, 165580141, 267914296, 433494437,
-          701408733, 1134903170, 1836311903, 2147483647
-        ];
-        ret table[safe_x];
+      ref fib(x:int(0,_)): int {
+        ret min(1, x);
+        ret max(res, rec(x - 1) + rec(x - 2));
+        rad x;
       }
     `);
     const fib = exportedFunction<(x: number) => number>(instance, "fib");
@@ -335,9 +360,82 @@ describe("@jplmm/backend", () => {
     expect(fib(-5)).toBe(0);
     expect(fib(0)).toBe(0);
     expect(fib(1)).toBe(1);
-    expect(fib(12)).toBe(144);
-    expect(fib(48)).toBe(2147483647);
+    expect(fib(6)).toBe(8);
     expect(wat.match(/\(func \$fib/g)?.length ?? 0).toBe(1);
+  });
+
+  it("compiles recursive refs that express sibling recurrences with sum folds", async () => {
+    const { wat, instance } = await compileInstance(`
+      fun fib(x:int(0,_)): int {
+        ret clamp(x, 0, 1);
+        ret max(res, rec(x - 1) + rec(x - 2));
+        rad x;
+      }
+
+      ref fib(x:int(0,_)): int {
+        ret min(1, x);
+        ret max(res, sum [i:2] rec(x - (i + 1)));
+        rad x;
+      }
+    `);
+    const fib = exportedFunction<(x: number) => number>(instance, "fib");
+
+    expect(fib(-5)).toBe(0);
+    expect(fib(0)).toBe(0);
+    expect(fib(1)).toBe(1);
+    expect(fib(7)).toBe(13);
+    expect(wat.match(/\(func \$fib/g)?.length ?? 0).toBe(1);
+  });
+
+  it("compiles recursive float refs through shared symbolic induction", async () => {
+    const { wat, instance } = await compileInstance(`
+      fun cool(x:int, y:float): float {
+        ret y;
+        ret rec(max(0, x - 1), y) + (y - y) + 1.0;
+        rad abs(x);
+      }
+
+      ref cool(n:int, z:float): float {
+        ret z;
+        let next = max(0, n - 1);
+        ret 1.0 + rec(next, z) + (z - z);
+        rad abs(n);
+      }
+    `);
+    const cool = exportedFunction<(x: number, y: number) => number>(instance, "cool");
+
+    expect(cool(0, 3.5)).toBeCloseTo(4.5, 6);
+    expect(cool(3, 3.5)).toBeCloseTo(7.5, 6);
+    expect(wat.match(/\(func \$cool/g)?.length ?? 0).toBe(1);
+  });
+
+  it("compiles recursive refs that use helper calls in the symbolic induction path", async () => {
+    const { wat, instance } = await compileInstance(`
+      fun helper(x:int): int {
+        ret 0;
+        ret rec(max(0, x - 1)) + 1;
+        rad abs(x);
+      }
+
+      fun top(x:int): int {
+        ret 0;
+        ret helper(x) + rec(max(0, x - 1));
+        rad abs(x);
+      }
+
+      ref top(n:int): int {
+        ret 0;
+        let helper_now = helper(n);
+        let next = max(0, n - 1);
+        ret rec(next) + helper_now;
+        rad abs(n);
+      }
+    `);
+    const top = exportedFunction<(x: number) => number>(instance, "top");
+
+    expect(top(0)).toBe(1);
+    expect(top(4)).toBe(15);
+    expect(wat.match(/\(func \$top/g)?.length ?? 0).toBe(1);
   });
 
   it("lowers LUT implementations into wasm memory-backed fast paths with fallback", async () => {
@@ -533,5 +631,36 @@ describe("@jplmm/backend", () => {
     expect(settle(handle)).toBe(9);
     expect(wat).toContain("call $jplmm_array_slice");
     expect(wat).toContain("call $jplmm_eq_array_arr2_i32");
+  });
+
+  it("normalizes bounded scalar parameters in compiled wasm", async () => {
+    const { instance } = await compileInstance(`
+      fn clamp_in(x:int(0, 10), y:float(0.0, 1.0)): float {
+        ret to_float(x) + y;
+      }
+    `);
+    const clampIn = exportedFunction<(x: number, y: number) => number>(instance, "clamp_in");
+
+    expect(clampIn(-5, 2.5)).toBeCloseTo(1.0, 6);
+    expect(clampIn(20, -3)).toBeCloseTo(10.0, 6);
+  });
+
+  it("normalizes bounded recursive arguments before wasm tail-rec collapse", async () => {
+    const { instance } = await compileInstance(
+      `
+        fn zero(x:int(0,_)): int {
+          ret x;
+          ret rec(x - 1);
+          rad x;
+        }
+      `,
+      {},
+      {
+        tailCalls: false,
+      },
+    );
+    const zero = exportedFunction<(x: number) => number>(instance, "zero");
+
+    expect(zero(-3)).toBe(0);
   });
 });

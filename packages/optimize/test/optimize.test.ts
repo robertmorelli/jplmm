@@ -60,7 +60,7 @@ describe("@jplmm/optimize", () => {
     if (outExpr?.tag === "ret") {
       expect(outExpr.expr.tag).toBe("sat_add");
       if (outExpr.expr.tag === "sat_add") {
-        expect(outExpr.expr.left.tag).toBe("total_div");
+        expect([outExpr.expr.left.tag, outExpr.expr.right.tag].sort()).toEqual(["int_lit", "total_div"]);
       }
     }
   });
@@ -157,9 +157,63 @@ describe("@jplmm/optimize", () => {
     if (ret?.tag === "ret") {
       expect(ret.expr.tag).toBe("sat_mul");
       if (ret.expr.tag === "sat_mul") {
-        expect(ret.expr.left.tag).toBe("sat_sub");
-        if (ret.expr.left.tag === "sat_sub") {
-          expect(ret.expr.left.left.tag).toBe("sat_neg");
+        const nested = ret.expr.left.tag === "sat_sub" ? ret.expr.left : ret.expr.right.tag === "sat_sub" ? ret.expr.right : null;
+        expect(nested?.tag).toBe("sat_sub");
+        if (nested?.tag === "sat_sub") {
+          expect([nested.left.tag, nested.right.tag].sort()).toContain("sat_neg");
+        }
+      }
+    }
+  });
+
+  it("sorts commutative operands in canonical IR for scalar and saturating arithmetic", () => {
+    const intExpr: IRExpr = {
+      tag: "binop",
+      op: "+",
+      left: { tag: "var", name: "b", id: 1, resultType: INT_T },
+      right: { tag: "var", name: "a", id: 2, resultType: INT_T },
+      id: 3,
+      resultType: INT_T,
+    };
+    const floatExpr: IRExpr = {
+      tag: "binop",
+      op: "*",
+      left: { tag: "var", name: "rhs", id: 4, resultType: FLOAT_T },
+      right: { tag: "var", name: "lhs", id: 5, resultType: FLOAT_T },
+      id: 6,
+      resultType: FLOAT_T,
+    };
+
+    const intResult = canonicalizeProgram(wrapInProgram(intExpr, INT_T));
+    const floatResult = canonicalizeProgram(wrapInProgram(floatExpr, FLOAT_T));
+
+    const intRet = intResult.program.functions[0]?.body[0];
+    expect(intRet?.tag).toBe("ret");
+    if (intRet?.tag === "ret") {
+      expect(intRet.expr.tag).toBe("sat_add");
+      if (intRet.expr.tag === "sat_add") {
+        expect(intRet.expr.left.tag).toBe("var");
+        expect(intRet.expr.right.tag).toBe("var");
+        if (intRet.expr.left.tag === "var" && intRet.expr.right.tag === "var") {
+          expect(intRet.expr.left.name).toBe("a");
+          expect(intRet.expr.right.name).toBe("b");
+        }
+      }
+    }
+
+    const floatRet = floatResult.program.functions[0]?.body[0];
+    expect(floatRet?.tag).toBe("ret");
+    if (floatRet?.tag === "ret") {
+      expect(floatRet.expr.tag).toBe("nan_to_zero");
+      if (floatRet.expr.tag === "nan_to_zero") {
+        expect(floatRet.expr.value.tag).toBe("binop");
+        if (floatRet.expr.value.tag === "binop") {
+          expect(floatRet.expr.value.left.tag).toBe("var");
+          expect(floatRet.expr.value.right.tag).toBe("var");
+          if (floatRet.expr.value.left.tag === "var" && floatRet.expr.value.right.tag === "var") {
+            expect(floatRet.expr.value.left.name).toBe("lhs");
+            expect(floatRet.expr.value.right.name).toBe("rhs");
+          }
         }
       }
     }

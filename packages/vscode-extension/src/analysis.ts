@@ -402,8 +402,21 @@ function parseParameters(
   const params: SymbolDef[] = [];
   for (let idx = startIndex; idx < endIndex; idx += 1) {
     const token = tokens[idx];
+    const previous = previousToken(tokens, idx);
     const next = nextToken(tokens, idx);
     if (token?.kind === "ident" && next?.text === ":") {
+      params.push({
+        name: token.text,
+        kind: "parameter",
+        start: token.start,
+        end: token.end,
+        scopeStart: token.start,
+        scopeEnd,
+        containerName: fnName,
+      });
+      continue;
+    }
+    if (token?.kind === "ident" && previous?.text === "[" && next?.text === "]") {
       params.push({
         name: token.text,
         kind: "parameter",

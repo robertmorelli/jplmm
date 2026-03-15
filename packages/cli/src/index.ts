@@ -8,7 +8,7 @@ import { optimizeProgram, type DisableablePassName, type FunctionImplementation 
 import { analyzeProgramMetrics, verifyProgram } from "@jplmm/verify";
 
 import { executeTopLevelProgram } from "./run";
-import { buildSemanticsDebugData, renderSemanticsDebugData } from "./semantics";
+import { buildCompilerSemantics, buildSemanticsDebugData, renderSemanticsDebugData } from "./semantics";
 
 export type CliMode = "parse" | "typecheck" | "verify" | "optimize" | "wat" | "native" | "run" | "semantics";
 
@@ -18,6 +18,7 @@ export type CliOptions = {
   disablePasses?: DisableablePassName[];
   cwd?: string;
   verifyBeforeRun?: boolean;
+  proofTimeoutMs?: number;
 };
 
 export type CliReport = {
@@ -35,8 +36,14 @@ export type CliReport = {
   ok: boolean;
 };
 
+const DEFAULT_CLI_PROOF_TIMEOUT_MS = 2000;
+
 export function runOnSource(source: string, mode: CliMode, options: CliOptions = {}): CliReport {
-  const frontend = runFrontend(source);
+  const proofTimeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
+  const frontend = runFrontend(
+    source,
+    proofTimeoutMs === undefined ? {} : { proofTimeoutMs },
+  );
   const diagnostics = frontend.diagnostics.map((d) => `${d.severity.toUpperCase()}: ${d.message}`);
   const shouldVerify = mode === "verify" || (mode === "run" && options.verifyBeforeRun === true);
   const shouldAnalyzeProofs = shouldVerify || mode === "semantics";
@@ -55,9 +62,14 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
   let wroteFiles: string[] = [];
   let verification: ReturnType<typeof verifyProgram> | null = null;
   let semanticsBackend: Parameters<typeof buildSemanticsDebugData>[2] = null;
+  let compilerSemantics: Parameters<typeof buildSemanticsDebugData>[3] = null;
 
   if (shouldAnalyzeProofs) {
-    verification = verifyProgram(frontend.program, frontend.typeMap);
+    verification = verifyProgram(
+      frontend.program,
+      frontend.typeMap,
+      proofTimeoutMs === undefined ? {} : { proofTimeoutMs },
+    );
     const metrics = analyzeProgramMetrics(frontend.program);
     diagnostics.push(...verification.diagnostics.map((d) => `${d.severity.toUpperCase()}: ${d.message}`));
     proofSummary.push(...[...verification.proofMap.entries()].map(
@@ -83,6 +95,11 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
       ([fnName, impl]) => `${fnName}: ${impl.tag}`,
     );
     if (mode === "semantics") {
+      compilerSemantics = buildCompilerSemantics(
+        ir,
+        optimized,
+        proofTimeoutMs === undefined ? {} : { timeoutMs: proofTimeoutMs },
+      );
       semanticsBackend = {
         optimizeSummary: [...optimizeSummary],
         implementationSummary: [...implementationSummary],
@@ -119,8 +136,13 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
     semantics = renderSemanticsDebugData(
       buildSemanticsDebugData(
         frontend,
-        verification ?? verifyProgram(frontend.program, frontend.typeMap),
+        verification ?? verifyProgram(
+          frontend.program,
+          frontend.typeMap,
+          proofTimeoutMs === undefined ? {} : { proofTimeoutMs },
+        ),
         semanticsBackend,
+        compilerSemantics,
       ),
     );
   }
@@ -198,6 +220,16 @@ function describeWatFallback(fnName: string, implementation: FunctionImplementat
       return _never;
     }
   }
+}
+
+function resolveProofTimeoutMs(proofTimeoutMs: number | undefined): number | undefined {
+  if (proofTimeoutMs === undefined) {
+    return DEFAULT_CLI_PROOF_TIMEOUT_MS;
+  }
+  if (!Number.isFinite(proofTimeoutMs) || proofTimeoutMs <= 0) {
+    return DEFAULT_CLI_PROOF_TIMEOUT_MS;
+  }
+  return Math.min(2000, Math.max(1, Math.floor(proofTimeoutMs)));
 }
 
 export function runOnFile(filepath: string, mode: CliMode, options: CliOptions = {}): CliReport {

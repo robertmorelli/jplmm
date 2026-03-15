@@ -151,6 +151,25 @@ describe("parseSource", () => {
     }
   });
 
+  it("parses named array extent parameters", () => {
+    const r = parseSource(`
+      fun dims(a:int[n][m]): int {
+        ret n + m;
+      }
+    `);
+
+    expect(r.diagnostics).toHaveLength(0);
+    const fn = r.program.commands[0];
+    expect(fn?.tag).toBe("fn_def");
+    if (fn?.tag === "fn_def") {
+      expect(fn.params[0]?.type).toMatchObject({
+        tag: "array",
+        dims: 2,
+        extentNames: ["n", "m"],
+      });
+    }
+  });
+
   it("parses command-surface strings and timing wrappers", () => {
     const r = parseSource(`
       print "hello";

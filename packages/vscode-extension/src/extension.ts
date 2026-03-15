@@ -3,14 +3,20 @@ import { dirname } from "node:path";
 import { runOnSource, type CliMode } from "@jplmm/cli";
 import { runFrontend, type Diagnostic as FrontendDiagnostic } from "@jplmm/frontend";
 import type { DisableablePassName } from "@jplmm/optimize";
-import { analyzeProgramMetrics, type FunctionMetrics, verifyProgram, type VerificationDiagnostic } from "@jplmm/verify";
+import {
+  analyzeProgramMetrics,
+  type FunctionMetrics,
+  verifyProgram,
+  type VerificationDiagnostic,
+  type VerificationOutput,
+} from "@jplmm/verify";
 import * as vscode from "vscode";
 
 import {
   buildOutResultAnnotations,
   canAnnotateInlineOutResults,
-  collectFunctionMetricAnnotations,
   collectFunctionRefinementAnnotations,
+  collectSourceFunctionMetricAnnotations,
   findVerificationDiagnosticAnchor,
 } from "./annotations.js";
 import { buildDocumentIndex, findDefinition, getCompletions, type CompletionEntry } from "./analysis.js";
@@ -27,8 +33,14 @@ import {
   renderVariableRangeHover,
   type VariableRangeInfo,
 } from "./range_info.js";
+import { renderFunctionSemanticHover } from "./semantic_info.js";
 
 const LANGUAGE_ID = "jplmm";
+const JPLMM_EXTENSIONS = [".jplmm"];
+const JPLMM_SELECTORS: vscode.DocumentSelector = [
+  { language: LANGUAGE_ID },
+  ...JPLMM_EXTENSIONS.map((ext) => ({ pattern: `**/*${ext}` })),
+];
 const OUTPUT_NAME = "JPLMM";
 const BUILTIN_FUNCTIONS = new Set([
   "sqrt",
@@ -56,6 +68,9 @@ const DISABLEABLE_PASSES = new Set<DisableablePassName>([
   "aitken",
   "linear_speculation",
 ]);
+const HARD_PROOF_TIMEOUT_MS = 2000;
+const DEFAULT_EDITOR_PROOF_TIMEOUT_MS = 200;
+const DEFAULT_RUN_PROOF_TIMEOUT_MS = HARD_PROOF_TIMEOUT_MS;
 const KEYWORD_INFO = new Map<string, string>([
   ["fun", "Function definition"],
   ["fn", "Legacy alias for fun"],
@@ -88,19 +103,37 @@ const KEYWORD_INFO = new Map<string, string>([
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel(OUTPUT_NAME);
   const diagnostics = vscode.languages.createDiagnosticCollection(LANGUAGE_ID);
+  const activatedAt = new Date().toISOString();
   const indexCache = new Map<string, { version: number; index: ReturnType<typeof buildDocumentIndex> }>();
   const frontendCache = new Map<string, { version: number; frontend: ReturnType<typeof runFrontend> }>();
+  const verificationCache = new Map<string, { version: number; verification: VerificationOutput | null }>();
   const inlineResultCache = new Map<string, { version: number; report: ReturnType<typeof runOnSource> | null }>();
   const optimizationCache = new Map<string, { version: number; info: Map<string, FunctionOptimizationInfo> }>();
   const variableRangeCache = new Map<string, { version: number; info: VariableRangeInfo }>();
   const metricsCache = new Map<string, { version: number; metrics: Map<string, FunctionMetrics> }>();
+  const pendingRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
   const codeLensChanges = new vscode.EventEmitter<void>();
   const inlayHintChanges = new vscode.EventEmitter<void>();
+  const trace = (message: string) => {
+    if (!vscode.workspace.getConfiguration("jplmm").get<boolean>("debug.traceExtension", false)) {
+      return;
+    }
+    output.appendLine(`[ext ${new Date().toISOString()}] ${message}`);
+  };
+
+  output.appendLine(`[ext ${activatedAt}] activated`);
+  trace(`startup documents=${vscode.workspace.textDocuments.length}`);
 
   const clearCachesForDocument = (document: vscode.TextDocument) => {
     const key = document.uri.toString();
+    const pending = pendingRefreshes.get(key);
+    if (pending) {
+      clearTimeout(pending);
+      pendingRefreshes.delete(key);
+    }
     indexCache.delete(key);
     frontendCache.delete(key);
+    verificationCache.delete(key);
     inlineResultCache.delete(key);
     optimizationCache.delete(key);
     variableRangeCache.delete(key);
@@ -122,7 +155,11 @@ export function activate(context: vscode.ExtensionContext): void {
     if (cached && cached.version === document.version) {
       return cached.frontend;
     }
-    const frontend = runFrontend(document.getText());
+    const frontend = runFrontend(
+      document.getText(),
+      readEditorProofTimeoutMs() === undefined ? {} : { proofTimeoutMs: readEditorProofTimeoutMs() },
+    );
+    trace(`frontend uri=${document.uri.toString()} diagnostics=${frontend.diagnostics.length}`);
     frontendCache.set(document.uri.toString(), { version: document.version, frontend });
     return frontend;
   };
@@ -147,9 +184,33 @@ export function activate(context: vscode.ExtensionContext): void {
       safe: config.get<boolean>("run.safe", false),
       disablePasses: readDisablePassesConfig(config),
       verifyBeforeRun: config.get<boolean>("run.verifyBeforeRun", true),
+      ...(readEditorProofTimeoutMs(config) === undefined ? {} : { proofTimeoutMs: readEditorProofTimeoutMs(config) }),
     });
     inlineResultCache.set(key, { version: document.version, report });
     return report;
+  };
+
+  const getVerification = (document: vscode.TextDocument) => {
+    const key = document.uri.toString();
+    const cached = verificationCache.get(key);
+    if (cached && cached.version === document.version) {
+      return cached.verification;
+    }
+
+    const frontend = getFrontend(document);
+    if (frontend.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+      verificationCache.set(key, { version: document.version, verification: null });
+      return null;
+    }
+
+    const verification = verifyProgram(
+      frontend.program,
+      frontend.typeMap,
+      readEditorProofTimeoutMs() === undefined ? {} : { proofTimeoutMs: readEditorProofTimeoutMs() },
+    );
+    trace(`verify uri=${document.uri.toString()} diagnostics=${verification.diagnostics.length}`);
+    verificationCache.set(key, { version: document.version, verification });
+    return verification;
   };
 
   const getOptimizationInfo = (document: vscode.TextDocument) => {
@@ -204,15 +265,16 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const refreshDiagnostics = (document: vscode.TextDocument) => {
-    if (document.languageId !== LANGUAGE_ID) {
+    trace(`refreshDiagnostics uri=${document.uri.toString()} languageId=${document.languageId} isJplmm=${isJplmmDocument(document)}`);
+    if (!isJplmmDocument(document)) {
       return;
     }
     const frontend = getFrontend(document);
     const out = frontend.diagnostics.map((diagnostic) => toVsCodeDiagnostic(document, diagnostic));
     if (!frontend.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
-      const verify = verifyProgram(frontend.program, frontend.typeMap);
+      const verify = getVerification(document);
       out.push(
-        ...verify.diagnostics.map((diagnostic) => toVsCodeVerificationDiagnostic(document, frontend.program, diagnostic)),
+        ...(verify?.diagnostics ?? []).map((diagnostic) => toVsCodeVerificationDiagnostic(document, frontend.program, diagnostic)),
       );
       const optimizationInfo = getOptimizationInfo(document);
       out.push(
@@ -221,10 +283,36 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }
     diagnostics.set(document.uri, out);
+    trace(`diagnostics uri=${document.uri.toString()} total=${out.length} frontend=${frontend.diagnostics.length}`);
+  };
+
+  const scheduleRefreshDiagnostics = (
+    document: vscode.TextDocument,
+    reason: string,
+    delayMs = 0,
+  ) => {
+    const key = document.uri.toString();
+    const pending = pendingRefreshes.get(key);
+    if (pending) {
+      clearTimeout(pending);
+    }
+    trace(`scheduleRefresh uri=${key} reason=${reason} delayMs=${delayMs}`);
+    const handle = setTimeout(() => {
+      pendingRefreshes.delete(key);
+      try {
+        refreshDiagnostics(document);
+      } catch (error) {
+        output.appendLine(`[ext ${new Date().toISOString()}] refresh failed for ${key}: ${String(error)}`);
+        if (error instanceof Error && error.stack) {
+          output.appendLine(error.stack);
+        }
+      }
+    }, delayMs);
+    pendingRefreshes.set(key, handle);
   };
 
   for (const document of vscode.workspace.textDocuments) {
-    refreshDiagnostics(document);
+    scheduleRefreshDiagnostics(document, "activate", 0);
   }
 
   context.subscriptions.push(
@@ -232,14 +320,24 @@ export function activate(context: vscode.ExtensionContext): void {
     diagnostics,
     codeLensChanges,
     inlayHintChanges,
-    vscode.workspace.onDidOpenTextDocument(refreshDiagnostics),
+    {
+      dispose() {
+        for (const handle of pendingRefreshes.values()) {
+          clearTimeout(handle);
+        }
+        pendingRefreshes.clear();
+      },
+    },
+    vscode.workspace.onDidOpenTextDocument((document) => {
+      scheduleRefreshDiagnostics(document, "open", 0);
+    }),
     vscode.workspace.onDidCloseTextDocument((document) => {
       diagnostics.delete(document.uri);
       clearCachesForDocument(document);
     }),
     vscode.workspace.onDidChangeTextDocument((event) => {
       clearCachesForDocument(event.document);
-      refreshDiagnostics(event.document);
+      scheduleRefreshDiagnostics(event.document, "change", 25);
       codeLensChanges.fire();
       inlayHintChanges.fire();
     }),
@@ -249,13 +347,13 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       for (const document of vscode.workspace.textDocuments) {
         clearCachesForDocument(document);
-        refreshDiagnostics(document);
+        scheduleRefreshDiagnostics(document, "config", 0);
       }
       codeLensChanges.fire();
       inlayHintChanges.fire();
     }),
     vscode.languages.registerDefinitionProvider(
-      { language: LANGUAGE_ID },
+      JPLMM_SELECTORS,
       {
         provideDefinition(document, position) {
           const index = getIndex(document);
@@ -272,7 +370,7 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.languages.registerCompletionItemProvider(
-      { language: LANGUAGE_ID },
+      JPLMM_SELECTORS,
       {
         provideCompletionItems(document, position) {
           const index = getIndex(document);
@@ -287,13 +385,14 @@ export function activate(context: vscode.ExtensionContext): void {
       " ",
     ),
     vscode.languages.registerHoverProvider(
-      { language: LANGUAGE_ID },
+      JPLMM_SELECTORS,
       {
         provideHover(document, position) {
           const hover = buildHover(
             document,
             position,
             getFrontend(document),
+            getVerification(document),
             getIndex(document),
             diagnostics,
             getOptimizationInfo(document),
@@ -305,7 +404,7 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.languages.registerCodeLensProvider(
-      { language: LANGUAGE_ID },
+      JPLMM_SELECTORS,
       {
         onDidChangeCodeLenses: codeLensChanges.event,
         provideCodeLenses(document) {
@@ -316,9 +415,10 @@ export function activate(context: vscode.ExtensionContext): void {
           if (frontend.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
             return [];
           }
+          const index = getIndex(document);
 
           const annotations = [
-            ...collectFunctionMetricAnnotations(frontend.program, getMetrics(document)),
+            ...collectSourceFunctionMetricAnnotations(index.functions, getMetrics(document)),
             ...collectFunctionRefinementAnnotations(frontend.refinements),
           ];
           return annotations.map((annotation) => {
@@ -336,7 +436,7 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.languages.registerInlayHintsProvider(
-      { language: LANGUAGE_ID },
+      JPLMM_SELECTORS,
       {
         onDidChangeInlayHints: inlayHintChanges.event,
         provideInlayHints(document, range) {
@@ -373,10 +473,89 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
     vscode.commands.registerCommand("jplmm.noopMeta", () => undefined),
+    vscode.commands.registerCommand("jplmm.debugExtensionState", async (uri?: vscode.Uri) => {
+      output.show(true);
+      output.appendLine("> extension-state");
+      output.appendLine(`activatedAt=${activatedAt}`);
+      output.appendLine(`workspaceFolders=${(vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath).join(", ") || "<none>"}`);
+
+      const document = await resolveDocument(uri);
+      if (!document) {
+        output.appendLine("activeDocument=<none>");
+        return;
+      }
+
+      output.appendLine(`document.uri=${document.uri.toString()}`);
+      output.appendLine(`document.fsPath=${document.uri.fsPath || "<none>"}`);
+      output.appendLine(`document.scheme=${document.uri.scheme}`);
+      output.appendLine(`document.languageId=${document.languageId}`);
+      output.appendLine(`document.isJplmm=${String(isJplmmDocument(document))}`);
+      output.appendLine(`document.version=${document.version}`);
+
+      const config = vscode.workspace.getConfiguration("jplmm");
+      output.appendLine(`config.functionAnnotations=${String(config.get<boolean>("editor.functionAnnotations", true))}`);
+      output.appendLine(`config.inlineOutResults=${String(config.get<boolean>("editor.inlineOutResults", true))}`);
+      output.appendLine(`config.inlineExecutableSemantics=${String(config.get<boolean>("editor.inlineExecutableSemantics", true))}`);
+      output.appendLine(`config.functionSemanticHover=${String(readFunctionSemanticHoverEnabled(config))}`);
+      output.appendLine(`config.inlineVariableRanges=${String(config.get<boolean>("editor.inlineVariableRanges", true))}`);
+      output.appendLine(`config.verifyBeforeRun=${String(config.get<boolean>("run.verifyBeforeRun", true))}`);
+      output.appendLine(`config.editorProofTimeoutMs=${String(readEditorProofTimeoutMs(config))}`);
+      output.appendLine(`config.runProofTimeoutMs=${String(readRunProofTimeoutMs(config))}`);
+      output.appendLine(`config.traceExtension=${String(config.get<boolean>("debug.traceExtension", false))}`);
+
+      if (!isJplmmDocument(document)) {
+        output.appendLine("note=active document is not recognized as JPLMM");
+        return;
+      }
+
+      try {
+        const frontend = getFrontend(document);
+        const frontendErrors = frontend.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+        output.appendLine(`frontend.diagnostics=${frontend.diagnostics.length}`);
+        output.appendLine(`frontend.errors=${frontendErrors.length}`);
+        for (const diagnostic of frontend.diagnostics.slice(0, 10)) {
+          output.appendLine(`frontend.diag ${diagnostic.severity} ${diagnostic.code ?? "<no-code>"} ${diagnostic.message}`);
+        }
+
+        const verify = frontendErrors.length === 0 ? getVerification(document) : null;
+        output.appendLine(`verify.ran=${String(verify !== null)}`);
+        output.appendLine(`verify.diagnostics=${verify?.diagnostics.length ?? 0}`);
+        for (const diagnostic of verify?.diagnostics.slice(0, 10) ?? []) {
+          output.appendLine(`verify.diag ${diagnostic.severity} ${diagnostic.code} ${diagnostic.message}`);
+        }
+
+        const metrics = getMetrics(document);
+        const optimizationInfo = getOptimizationInfo(document);
+        const variableRangeInfo = getVariableRangeInfo(document);
+        const metricAnnotations = collectSourceFunctionMetricAnnotations(getIndex(document).functions, metrics);
+        const refinementAnnotations = collectFunctionRefinementAnnotations(frontend.refinements);
+
+        output.appendLine(`functions.metrics=${metrics.size}`);
+        output.appendLine(`functions.optimizationInfo=${optimizationInfo.size}`);
+        output.appendLine(`ranges.entries=${variableRangeInfo.entries.length}`);
+        output.appendLine(`annotations.metric=${metricAnnotations.length}`);
+        output.appendLine(`annotations.refinement=${refinementAnnotations.length}`);
+        output.appendLine(`hover.semanticFunctions=${verify?.traceMap.size ?? 0}`);
+        output.appendLine(`frontend.refinements=${frontend.refinements.length}`);
+        output.appendLine(`inline.canAnnotateOut=${String(canAnnotateInlineOutResults(frontend.program))}`);
+
+        const inlineReport = getInlineResultReport(document);
+        output.appendLine(`inline.report=${inlineReport ? (inlineReport.ok ? "ok" : "not-ok") : "none"}`);
+        if (inlineReport) {
+          output.appendLine(`inline.outputLines=${inlineReport.output.length}`);
+          output.appendLine(`inline.diagnostics=${inlineReport.diagnostics.length}`);
+        }
+      } catch (error) {
+        output.appendLine(`doctor.error=${String(error)}`);
+        if (error instanceof Error && error.stack) {
+          output.appendLine(error.stack);
+        }
+      }
+    }),
     vscode.commands.registerCommand("jplmm.runFile", async (uri?: vscode.Uri) => {
       const document = await resolveDocument(uri);
-      if (!document || document.languageId !== LANGUAGE_ID) {
-        void vscode.window.showErrorMessage("Open a .jplmm file to run it.");
+      if (!document || !isJplmmDocument(document)) {
+        void vscode.window.showErrorMessage("Open a JPLMM file to run it.");
         return;
       }
 
@@ -411,6 +590,7 @@ export function activate(context: vscode.ExtensionContext): void {
           safe,
           disablePasses,
           verifyBeforeRun,
+          ...(readRunProofTimeoutMs(config) === undefined ? {} : { proofTimeoutMs: readRunProofTimeoutMs(config) }),
         });
         writeReport(output, report, mode);
         if (!report.ok) {
@@ -525,6 +705,34 @@ function readDisablePassesConfig(config: vscode.WorkspaceConfiguration): Disable
     .filter((pass): pass is DisableablePassName => DISABLEABLE_PASSES.has(pass as DisableablePassName));
 }
 
+function readEditorProofTimeoutMs(config = vscode.workspace.getConfiguration("jplmm")): number | undefined {
+  return readPositiveTimeoutMs(config, "editor.proofTimeoutMs", DEFAULT_EDITOR_PROOF_TIMEOUT_MS);
+}
+
+function readRunProofTimeoutMs(config = vscode.workspace.getConfiguration("jplmm")): number | undefined {
+  return readPositiveTimeoutMs(config, "run.proofTimeoutMs", DEFAULT_RUN_PROOF_TIMEOUT_MS);
+}
+
+function readFunctionSemanticHoverEnabled(config = vscode.workspace.getConfiguration("jplmm")): boolean {
+  const explicit = config.get<boolean>("editor.functionSemanticHover");
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  return config.get<boolean>("editor.inlineExecutableSemantics", true);
+}
+
+function readPositiveTimeoutMs(
+  config: vscode.WorkspaceConfiguration,
+  key: string,
+  fallback: number,
+): number | undefined {
+  const raw = config.get<number>(key, fallback);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return fallback;
+  }
+  return Math.min(HARD_PROOF_TIMEOUT_MS, Math.max(1, Math.floor(raw)));
+}
+
 function positionInRange(document: vscode.TextDocument, offset: number, range: vscode.Range): boolean {
   const position = document.positionAt(offset);
   return range.contains(position);
@@ -539,8 +747,8 @@ async function resolveDocument(uri: vscode.Uri | undefined): Promise<vscode.Text
 
 async function showWatDebugDocument(uri: vscode.Uri | undefined, output: vscode.OutputChannel): Promise<void> {
   const document = await resolveDocument(uri);
-  if (!document || document.languageId !== LANGUAGE_ID) {
-    void vscode.window.showErrorMessage("Open a .jplmm file to inspect its WAT.");
+  if (!document || !isJplmmDocument(document)) {
+    void vscode.window.showErrorMessage("Open a JPLMM file to inspect its WAT.");
     return;
   }
 
@@ -555,6 +763,9 @@ async function showWatDebugDocument(uri: vscode.Uri | undefined, output: vscode.
     experimental: vscode.workspace.getConfiguration("jplmm").get<boolean>("run.experimental", true),
     safe: vscode.workspace.getConfiguration("jplmm").get<boolean>("run.safe", false),
     disablePasses: readDisablePassesConfig(vscode.workspace.getConfiguration("jplmm")),
+    ...(readRunProofTimeoutMs(vscode.workspace.getConfiguration("jplmm")) === undefined
+      ? {}
+      : { proofTimeoutMs: readRunProofTimeoutMs(vscode.workspace.getConfiguration("jplmm")) }),
   });
   if (!report.ok || !report.wat) {
     output.show(true);
@@ -576,8 +787,8 @@ async function showWatDebugDocument(uri: vscode.Uri | undefined, output: vscode.
 
 async function showSemanticsDebugDocument(uri: vscode.Uri | undefined, output: vscode.OutputChannel): Promise<void> {
   const document = await resolveDocument(uri);
-  if (!document || document.languageId !== LANGUAGE_ID) {
-    void vscode.window.showErrorMessage("Open a .jplmm file to inspect its semantics.");
+  if (!document || !isJplmmDocument(document)) {
+    void vscode.window.showErrorMessage("Open a JPLMM file to inspect its semantics.");
     return;
   }
 
@@ -593,6 +804,9 @@ async function showSemanticsDebugDocument(uri: vscode.Uri | undefined, output: v
     safe: vscode.workspace.getConfiguration("jplmm").get<boolean>("run.safe", false),
     disablePasses: readDisablePassesConfig(vscode.workspace.getConfiguration("jplmm")),
     verifyBeforeRun: true,
+    ...(readRunProofTimeoutMs(vscode.workspace.getConfiguration("jplmm")) === undefined
+      ? {}
+      : { proofTimeoutMs: readRunProofTimeoutMs(vscode.workspace.getConfiguration("jplmm")) }),
   });
   if (!report.semantics) {
     output.show(true);
@@ -617,6 +831,16 @@ function resolveDocumentDirectory(document: vscode.TextDocument): string | undef
     return dirname(document.uri.fsPath);
   }
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
+function isJplmmDocument(document: vscode.TextDocument): boolean {
+  return document.languageId === LANGUAGE_ID || hasJplmmExtension(document.uri);
+}
+
+function hasJplmmExtension(uri: vscode.Uri): boolean {
+  const path = uri.fsPath || uri.path || uri.toString();
+  const lowerPath = path.toLowerCase();
+  return JPLMM_EXTENSIONS.some((ext) => lowerPath.endsWith(ext));
 }
 
 function describeImplicitRunEntry(source: string): string | null {
@@ -677,6 +901,7 @@ function buildHover(
   document: vscode.TextDocument,
   position: vscode.Position,
   frontend: ReturnType<typeof runFrontend>,
+  verification: VerificationOutput | null,
   index: ReturnType<typeof buildDocumentIndex>,
   diagnostics: vscode.DiagnosticCollection,
   optimizationInfo: Map<string, FunctionOptimizationInfo>,
@@ -705,6 +930,12 @@ function buildHover(
       lines.push(renderVariableRangeHover(rangeInfo));
     }
     if (definition.kind === "function") {
+      if (readFunctionSemanticHoverEnabled()) {
+        const semanticHover = renderFunctionSemanticHover(frontend, verification, definition.name, offset);
+        if (semanticHover) {
+          lines.push(semanticHover);
+        }
+      }
       const refinement = latestRefinementFor(frontend, definition.name);
       if (refinement) {
         lines.push(renderRefinementHover(refinement));

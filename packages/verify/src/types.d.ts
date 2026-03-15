@@ -19,6 +19,9 @@ export type VerificationOutput = {
     canonicalProgram: IRProgram;
     traceMap: Map<string, VerificationFunctionTrace>;
 };
+export type VerificationOptions = {
+    proofTimeoutMs?: number;
+};
 export type VerificationFunctionTrace = {
     fnName: string;
     canonical: IRFunction;

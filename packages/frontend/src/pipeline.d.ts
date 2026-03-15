@@ -7,5 +7,8 @@ export type FrontendResult = {
     typeMap: Map<number, import("@jplmm/ast").Type>;
     refinements: RefinementReport[];
 };
-export declare function runFrontend(source: string): FrontendResult;
+export type FrontendOptions = {
+    proofTimeoutMs?: number;
+};
+export declare function runFrontend(source: string, options?: FrontendOptions): FrontendResult;
 //# sourceMappingURL=pipeline.d.ts.map

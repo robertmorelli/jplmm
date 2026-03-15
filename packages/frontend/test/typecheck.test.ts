@@ -226,4 +226,14 @@ describe("typecheckProgram", () => {
     `);
     expect(ds.some((d) => d.code === "IMMUTABLE_LVALUE")).toBe(true);
   });
+
+  it("typechecks named array extents as implicit int binders", () => {
+    const ds = typecheck(`
+      fn dims(a:int[n][m]): int {
+        let area = n * m;
+        ret area + a[0][0];
+      }
+    `);
+    expect(ds).toHaveLength(0);
+  });
 });

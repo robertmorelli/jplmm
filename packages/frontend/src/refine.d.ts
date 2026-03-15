@@ -1,4 +1,4 @@
-import type { FunctionKeyword, Program, Type } from "@jplmm/ast";
+import { type FunctionKeyword, type Program, type Type } from "@jplmm/ast";
 import { buildCanonicalProgram, type RefinementMethod } from "@jplmm/proof";
 import { type Diagnostic } from "./errors";
 export type RefinementStatus = "equivalent" | "mismatch" | "unproven" | "invalid";
@@ -24,5 +24,8 @@ export type RefineResult = {
     diagnostics: Diagnostic[];
     refinements: RefinementReport[];
 };
-export declare function refineProgram(program: Program, typeMap: Map<number, Type>): RefineResult;
+export type RefineOptions = {
+    proofTimeoutMs?: number;
+};
+export declare function refineProgram(program: Program, typeMap: Map<number, Type>, options?: RefineOptions): RefineResult;
 //# sourceMappingURL=refine.d.ts.map

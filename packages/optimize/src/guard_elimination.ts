@@ -10,15 +10,21 @@ export function eliminateGuards(
   let removedNanToZero = 0;
   let removedTotalDiv = 0;
   let removedTotalMod = 0;
+  const usedRangeExprIds = new Set<number>();
 
   const out = mapProgramExprs(program, (expr) => {
-    if (expr.tag === "nan_to_zero" && canRemoveNanToZero(expr.value, rangeMap)) {
+    const nanReasons = expr.tag === "nan_to_zero" ? canRemoveNanToZero(expr.value, rangeMap) : null;
+    if (expr.tag === "nan_to_zero" && nanReasons) {
       removedNanToZero += 1;
+      for (const id of nanReasons) {
+        usedRangeExprIds.add(id);
+      }
       return expr.value;
     }
 
     if (expr.tag === "total_div" && divisorExcludesZero(expr.right.id, rangeMap)) {
       removedTotalDiv += 1;
+      usedRangeExprIds.add(expr.right.id);
       return {
         tag: "binop",
         op: "/",
@@ -31,6 +37,7 @@ export function eliminateGuards(
 
     if (expr.tag === "total_mod" && divisorExcludesZero(expr.right.id, rangeMap)) {
       removedTotalMod += 1;
+      usedRangeExprIds.add(expr.right.id);
       return {
         tag: "binop",
         op: "%",
@@ -50,41 +57,44 @@ export function eliminateGuards(
     removedNanToZero,
     removedTotalDiv,
     removedTotalMod,
+    usedRangeExprIds: [...usedRangeExprIds].sort((left, right) => left - right),
   };
 }
 
 function canRemoveNanToZero(
   expr: IRExpr,
   rangeMap: Map<number, { lo: number; hi: number }>,
-): boolean {
+): number[] | null {
   if (expr.tag === "call") {
     const arg = expr.args[0];
     const range = arg ? rangeMap.get(arg.id) : undefined;
     if (!range) {
-      return false;
+      return null;
     }
     if (expr.name === "sqrt") {
-      return range.lo >= 0;
+      return range.lo >= 0 ? [arg!.id] : null;
     }
     if (expr.name === "log") {
-      return range.lo > 0;
+      return range.lo > 0 ? [arg!.id] : null;
     }
     if (expr.name === "asin" || expr.name === "acos") {
-      return range.lo >= -1 && range.hi <= 1;
+      return range.lo >= -1 && range.hi <= 1 ? [arg!.id] : null;
     }
   }
 
   if ((expr.tag === "total_div" || expr.tag === "total_mod") && divisorExcludesZero(expr.right.id, rangeMap)) {
-    return true;
+    return [expr.right.id];
   }
 
   if (expr.tag === "binop" && (expr.op === "+" || expr.op === "-" || expr.op === "*")) {
     const left = rangeMap.get(expr.left.id);
     const right = rangeMap.get(expr.right.id);
-    return Boolean(left && right && isFiniteInterval(left) && isFiniteInterval(right));
+    return left && right && isFiniteInterval(left) && isFiniteInterval(right)
+      ? [expr.left.id, expr.right.id]
+      : null;
   }
 
-  return false;
+  return null;
 }
 
 function divisorExcludesZero(

@@ -287,4 +287,24 @@ describe("resolveProgram", () => {
     `);
     expect(ds).toHaveLength(0);
   });
+
+  it("binds named array extents in direct function parameters", () => {
+    const ds = resolve(`
+      fn dims(a:int[n][m]): int {
+        ret n + m;
+      }
+    `);
+    expect(ds).toHaveLength(0);
+  });
+
+  it("rejects named array extents outside direct parameters", () => {
+    const ds = resolve(`
+      fn nope(a:int[]): int[n] {
+        ret 0;
+      }
+
+      struct Box { value:int[n] }
+    `);
+    expect(ds.some((d) => d.code === "TYPE_EXTENT_TARGET")).toBe(true);
+  });
 });

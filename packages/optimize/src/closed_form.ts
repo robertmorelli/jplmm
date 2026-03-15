@@ -1,3 +1,4 @@
+import { getScalarBounds } from "@jplmm/ast";
 import type { IRExpr, IRFunction, IRProgram } from "@jplmm/ir";
 
 import type { ClosedFormMatch, ClosedFormImplementation } from "./types";
@@ -15,6 +16,10 @@ export function matchClosedForms(program: IRProgram): ClosedFormMatch[] {
 
 function matchLinearCountdown(fn: IRFunction): ClosedFormImplementation | null {
   if (fn.params.length !== 1 || fn.params[0]?.type.tag !== "int" || fn.retType.tag !== "int") {
+    return null;
+  }
+  const bounds = getScalarBounds(fn.params[0]?.type);
+  if (bounds?.lo === null || bounds?.lo === undefined || bounds.lo < 0) {
     return null;
   }
 

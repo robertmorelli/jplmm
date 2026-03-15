@@ -7,10 +7,12 @@ import type {
   LValue,
   Param,
   Program,
+  ScalarBounds,
   Stmt,
   StructField,
   Type,
 } from "@jplmm/ast";
+import { normalizedScalarBounds } from "@jplmm/ast";
 import { REMOVED_KEYWORDS, tokenize, type Token } from "@jplmm/grammar";
 
 import { error, type Diagnostic } from "./errors";
@@ -102,7 +104,7 @@ class Parser {
       do {
         const paramName = this.expectIdentToken("Expected parameter name");
         this.expectSymbol(":", "Expected ':' after parameter name");
-        const paramType = this.parseType();
+        const paramType = this.parseType({ allowArrayExtentNames: true });
         params.push(this.withSpan({ name: paramName.text, type: paramType }, paramName.start, this.nodeEnd(paramType)));
       } while (this.acceptSymbol(","));
       this.expectSymbol(")", "Expected ')' after parameter list");
@@ -264,16 +266,18 @@ class Parser {
     return null;
   }
 
-  private parseType(): Type {
+  private parseType(options: { allowArrayExtentNames?: boolean } = {}): Type {
     const t = this.peek();
     let base: Type;
     const intToken = this.acceptKeywordToken("int");
     if (intToken) {
-      base = this.withSpan({ tag: "int" }, intToken.start, intToken.end);
+      const bounds = this.tryParseScalarBounds("int");
+      base = this.withSpan(bounds ? { tag: "int", bounds } : { tag: "int" }, intToken.start, this.lastEnd());
     } else {
       const floatToken = this.acceptKeywordToken("float");
       if (floatToken) {
-        base = this.withSpan({ tag: "float" }, floatToken.start, floatToken.end);
+        const bounds = this.tryParseScalarBounds("float");
+        base = this.withSpan(bounds ? { tag: "float", bounds } : { tag: "float" }, floatToken.start, this.lastEnd());
       } else {
         const voidToken = this.acceptKeywordToken("void");
         if (voidToken) {
@@ -290,14 +294,81 @@ class Parser {
     }
 
     let dims = 0;
+    const extentNames: Array<string | null> = [];
     while (this.acceptSymbol("[")) {
+      let extentName: string | null = null;
+      if (!this.peekIsSymbol("]")) {
+        const extent = this.peek();
+        if (extent.kind === "ident") {
+          extentName = this.expectIdentToken("Expected extent binder name in array type").text;
+        } else if (this.acceptWordToken("_")) {
+          extentName = null;
+        } else {
+          this.diagnostics.push(error("Expected ']' or extent binder name in array type", extent.start, extent.end));
+          if (!this.isEof()) {
+            this.advance();
+          }
+        }
+      }
       this.expectSymbol("]", "Expected ']' after '[' in array type");
       dims += 1;
+      extentNames.push(extentName);
     }
     if (dims > 0) {
-      return this.withSpan({ tag: "array", element: base, dims }, this.nodeStart(base), this.lastEnd());
+      const normalizedExtentNames = extentNames.some((name) => name !== null) ? extentNames : undefined;
+      return this.withSpan(
+        normalizedExtentNames
+          ? { tag: "array", element: base, dims, extentNames: normalizedExtentNames }
+          : { tag: "array", element: base, dims },
+        this.nodeStart(base),
+        this.lastEnd(),
+      );
     }
     return base;
+  }
+
+  private tryParseScalarBounds(tag: "int" | "float"): ScalarBounds | undefined {
+    if (!this.peekIsSymbol("(")) {
+      return undefined;
+    }
+    this.expectSymbol("(", "Expected '(' to start scalar bounds");
+    const lo = this.parseScalarBoundValue(tag);
+    this.expectSymbol(",", "Expected ',' in scalar bounds");
+    const hi = this.parseScalarBoundValue(tag);
+    this.expectSymbol(")", "Expected ')' after scalar bounds");
+    return normalizedScalarBounds({ lo, hi });
+  }
+
+  private parseScalarBoundValue(tag: "int" | "float"): number | null {
+    const hole = this.acceptWordToken("_");
+    if (hole) {
+      return null;
+    }
+
+    const minus = this.acceptSymbolToken("-");
+    const token = this.peek();
+    const sign = minus ? -1 : 1;
+    if (tag === "int") {
+      if (token.kind === "int") {
+        this.advance();
+        return sign * parseInt(token.text, 10);
+      }
+      this.diagnostics.push(error("Expected int bound or '_'", token.start, token.end, "TYPE_BOUND_INT"));
+      if (!this.isEof()) {
+        this.advance();
+      }
+      return 0;
+    }
+
+    if (token.kind === "float" || token.kind === "int") {
+      this.advance();
+      return sign * parseFloat(token.text);
+    }
+    this.diagnostics.push(error("Expected float bound or '_'", token.start, token.end, "TYPE_BOUND_FLOAT"));
+    if (!this.isEof()) {
+      this.advance();
+    }
+    return 0;
   }
 
   private parseLValue(): LValue {
@@ -638,6 +709,10 @@ class Parser {
     return this.tokens[this.idx] ?? this.tokens[this.tokens.length - 1]!;
   }
 
+  private peekOffset(offset: number): Token {
+    return this.tokens[this.idx + offset] ?? this.tokens[this.tokens.length - 1]!;
+  }
+
   private advance(): Token {
     const t = this.peek();
     this.idx += 1;
@@ -673,6 +748,11 @@ class Parser {
       return true;
     }
     return false;
+  }
+
+  private peekIsSymbol(text: string): boolean {
+    const t = this.peek();
+    return t.kind === "symbol" && t.text === text;
   }
 
   private expectSymbol(text: string, message: string): void {

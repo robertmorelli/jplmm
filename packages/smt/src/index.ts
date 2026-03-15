@@ -1,6 +1,12 @@
 import { spawnSync } from "node:child_process";
 
 export type SExpr = string | SExpr[];
+export type Z3RunOptions = {
+  timeoutMs?: number;
+  deadlineAtMs?: number;
+};
+
+export const HARD_Z3_TIMEOUT_MS = 2000;
 
 export type Z3Status = "sat" | "unsat" | "unknown" | "other";
 
@@ -13,6 +19,7 @@ export type Z3CheckResult =
   | {
       ok: false;
       error: string;
+      timedOut: boolean;
     };
 
 export type Z3ValuesResult =
@@ -25,6 +32,7 @@ export type Z3ValuesResult =
   | {
       ok: false;
       error: string;
+      timedOut: boolean;
     };
 
 export const INT32_MIN = -2147483648;
@@ -90,8 +98,8 @@ export function sanitizeSymbol(name: string): string {
   return name.replace(/[^A-Za-z0-9_]/g, "_");
 }
 
-export function checkSat(lines: string[]): Z3CheckResult {
-  const result = runZ3(lines, ["(check-sat)"]);
+export function checkSat(lines: string[], options: Z3RunOptions = {}): Z3CheckResult {
+  const result = runZ3(lines, ["(check-sat)"], options);
   if (!result.ok) {
     return result;
   }
@@ -102,9 +110,9 @@ export function checkSat(lines: string[]): Z3CheckResult {
   };
 }
 
-export function checkSatAndGetValues(lines: string[], symbols: string[]): Z3ValuesResult {
+export function checkSatAndGetValues(lines: string[], symbols: string[], options: Z3RunOptions = {}): Z3ValuesResult {
   if (symbols.length === 0) {
-    const result = checkSat(lines);
+    const result = checkSat(lines, options);
     if (!result.ok) {
       return result;
     }
@@ -119,7 +127,7 @@ export function checkSatAndGetValues(lines: string[], symbols: string[]): Z3Valu
   const result = runZ3(lines, [
     "(check-sat)",
     `(get-value (${symbols.join(" ")}))`,
-  ]);
+  ], options);
   if (!result.ok) {
     return result;
   }
@@ -130,6 +138,18 @@ export function checkSatAndGetValues(lines: string[], symbols: string[]): Z3Valu
     output: result.output,
     status,
     values: status === "sat" ? parseGetValueOutput(result.output) : null,
+  };
+}
+
+export function withHardTimeout(options: Z3RunOptions = {}, nowMs = Date.now()): Z3RunOptions {
+  const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
+  const deadlineAtMs = options.deadlineAtMs === undefined
+    ? nowMs + timeoutMs
+    : Math.min(options.deadlineAtMs, nowMs + timeoutMs);
+  return {
+    ...options,
+    timeoutMs,
+    deadlineAtMs,
   };
 }
 
@@ -164,15 +184,34 @@ export function parseZ3Int(value: string): number | null {
   return null;
 }
 
-function runZ3(lines: string[], commands: string[]): { ok: true; output: string } | { ok: false; error: string } {
-  const result = spawnSync(Z3_PATH, ["-in"], {
-    input: `${[...lines, ...commands].join("\n")}\n`,
-    encoding: "utf8",
-  });
-  if (result.error) {
+function runZ3(
+  lines: string[],
+  commands: string[],
+  options: Z3RunOptions = {},
+): { ok: true; output: string } | { ok: false; error: string; timedOut: boolean } {
+  const budget = resolveRunBudget(options);
+  if (budget.remainingTimeoutMs <= 0) {
     return {
       ok: false,
-      error: result.error.message,
+      error: `z3 timed out after ${budget.timeoutMs}ms`,
+      timedOut: true,
+    };
+  }
+  const inputLines = [`(set-option :timeout ${budget.remainingTimeoutMs})`, ...lines, ...commands];
+  const result = spawnSync(Z3_PATH, ["-in"], {
+    input: `${inputLines.join("\n")}\n`,
+    encoding: "utf8",
+    timeout: budget.remainingTimeoutMs + 250,
+    killSignal: "SIGKILL" as const,
+  });
+  if (result.error) {
+    const timedOut = isTimeoutError(result.error);
+    return {
+      ok: false,
+      error: timedOut
+        ? `z3 timed out after ${budget.timeoutMs}ms`
+        : result.error.message,
+      timedOut,
     };
   }
   return {
@@ -192,6 +231,34 @@ function classifyZ3Output(output: string): Z3Status {
     return "unknown";
   }
   return "other";
+}
+
+function normalizeTimeoutMs(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return HARD_Z3_TIMEOUT_MS;
+  }
+  return Math.min(HARD_Z3_TIMEOUT_MS, Math.max(1, Math.floor(timeoutMs)));
+}
+
+function resolveRunBudget(options: Z3RunOptions, nowMs = Date.now()): {
+  timeoutMs: number;
+  deadlineAtMs: number;
+  remainingTimeoutMs: number;
+} {
+  const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
+  const deadlineAtMs = options.deadlineAtMs === undefined
+    ? nowMs + timeoutMs
+    : Math.min(options.deadlineAtMs, nowMs + timeoutMs);
+  return {
+    timeoutMs,
+    deadlineAtMs,
+    remainingTimeoutMs: Math.max(0, Math.floor(deadlineAtMs - nowMs)),
+  };
+}
+
+function isTimeoutError(error: Error): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ETIMEDOUT";
 }
 
 function parseSExpr(source: string): SExpr | null {

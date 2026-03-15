@@ -25,13 +25,27 @@ describe("variable range hover info", () => {
     expect(frontend.diagnostics).toHaveLength(0);
     expect(binding?.kind).toBe("binding");
     expect(use?.kind).toBe("use");
-    expect(renderVariableRangeHover(binding!)).toContain("int[0, 50]");
-    expect(renderVariableRangeHover(use!)).toContain("int[0, 50]");
+    expect(renderVariableRangeHover(binding!)).toContain("int(0, 50)");
+    expect(renderVariableRangeHover(use!)).toContain("int(0, 50)");
   });
 
   it("hides default full-domain scalar ranges", () => {
     const source = `
       fun passthrough(input:int): int {
+        ret input;
+      }
+    `;
+    const frontend = runFrontend(source);
+    const info = analyzeVariableRanges(frontend);
+    const inputUse = findVariableRangeAtOffset(info, source.lastIndexOf("input;"));
+
+    expect(frontend.diagnostics).toHaveLength(0);
+    expect(inputUse).toBeNull();
+  });
+
+  it("hides optimizer ranges already guaranteed by bounded parameter types", () => {
+    const source = `
+      fun passthrough(input:int(0, 10)): int {
         ret input;
       }
     `;
@@ -54,7 +68,7 @@ describe("variable range hover info", () => {
     const annotations = buildVariableRangeAnnotations(analyzeVariableRanges(frontend));
 
     expect(frontend.diagnostics).toHaveLength(0);
-    expect(annotations.some((annotation) => annotation.label === ": int[0, 50]")).toBe(true);
+    expect(annotations.some((annotation) => annotation.label === ": int(0, 50)")).toBe(true);
     expect(annotations.every((annotation) => annotation.tooltip.includes("Optimizer-proved"))).toBe(true);
   });
 });

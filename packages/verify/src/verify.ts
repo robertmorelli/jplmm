@@ -1,4 +1,5 @@
 import type { Cmd, Program, Type } from "@jplmm/ast";
+import type { IRFunction } from "@jplmm/ir";
 import { typecheckProgram } from "@jplmm/frontend";
 import {
   analyzeIrFunction,
@@ -69,7 +70,7 @@ export function verifyProgram(
 
 function verifyFunction(
   fnName: string,
-  fn: import("@jplmm/ir").IRFunction | null,
+  fn: IRFunction | null,
   trace: VerificationFunctionTrace | null,
   diagnostics: VerificationDiagnostic[],
   solverOptions: Z3RunOptions,

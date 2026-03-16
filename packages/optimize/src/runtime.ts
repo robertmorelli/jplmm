@@ -581,7 +581,7 @@ function indexArrayValue(
   let offset = 0;
   for (let i = 0; i < indices.length; i += 1) {
     const idx = clampIndexToDim(indices[i]!, arrayValue.dims[i]!);
-    const dim = arrayValue.dims[i]!;
+    const _dim = arrayValue.dims[i]!;
     offset += idx * strideOf(arrayValue.dims, i);
   }
 

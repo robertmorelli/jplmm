@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
 

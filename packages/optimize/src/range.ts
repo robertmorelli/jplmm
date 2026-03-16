@@ -1,5 +1,5 @@
 import { getArrayExtentNames, getScalarBounds, type Type } from "@jplmm/ast";
-import type { IRExpr, IRProgram, IRStmt } from "@jplmm/ir";
+import type { IRExpr, IRProgram } from "@jplmm/ir";
 
 import type { Interval, ParameterRangeHints, RangeAnalysisResult } from "./types";
 

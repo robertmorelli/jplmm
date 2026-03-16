@@ -9,7 +9,7 @@ import { typecheckProgram } from "./typecheck";
 export type FrontendResult = {
   program: Program;
   diagnostics: Diagnostic[];
-  typeMap: Map<number, import("@jplmm/ast").Type>;
+  typeMap: Map<number, Type>;
   refinements: RefinementReport[];
 };
 

@@ -1,10 +1,13 @@
-import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
-export default defineConfig({
+import { mergeConfig } from "vitest/config";
+
+import base from "../../vitest.base.config.ts";
+
+export default mergeConfig(base, {
   resolve: {
-    extensions: [".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".json"],
-  },
-  test: {
-    include: ["test/**/*.test.ts"],
+    alias: {
+      "@jplmm/grammar": fileURLToPath(new URL("../grammar/src/index.ts", import.meta.url)),
+    },
   },
 });

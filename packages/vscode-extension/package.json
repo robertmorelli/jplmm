@@ -209,7 +209,8 @@
     "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/extension.cjs --sourcemap",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bash ../../tools/run-vitest.sh",
-    "lint": "echo \"No lint yet for vscode-extension\""
+    "lint": "eslint src/ test/",
+    "test:coverage": "bash ../../tools/run-vitest.sh --coverage"
   },
   "dependencies": {
     "@jplmm/cli": "file:../cli",

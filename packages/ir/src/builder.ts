@@ -1,4 +1,4 @@
-import { getArrayExtentNames, type Binding, type Cmd, type Expr, type Program, type Stmt, type Type } from "@jplmm/ast";
+import { getArrayExtentNames, type Binding, type Cmd, type Expr, type LValue, type Program, type Stmt, type Type } from "@jplmm/ast";
 
 import type { IRBinding, IRExpr, IRFunction, IRGlobalLet, IRProgram, IRStmt, IRStructDef } from "./nodes";
 import { FLOAT_T, INT_T, VOID_T } from "./types";
@@ -164,7 +164,7 @@ function lowerStmt(stmt: Stmt, ctx: LowerCtx): IRStmt | null {
 }
 
 function lowerLetBinding(
-  lvalue: import("@jplmm/ast").LValue,
+  lvalue: LValue,
   expr: Expr,
   ctx: LowerCtx,
 ): { name: string; expr: IRExpr } | null {

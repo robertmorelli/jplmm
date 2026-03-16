@@ -1,10 +1,12 @@
+import type { optimizeProgram } from "@jplmm/optimize";
+
 export type ResearchBenchCase = {
   name: string;
   fnName: string;
   args: number[];
   runtimeIterations: number;
   nativeIterations: number;
-  optimizeOptions: Parameters<typeof import("@jplmm/optimize").optimizeProgram>[1];
+  optimizeOptions: Parameters<typeof optimizeProgram>[1];
   source: string;
   dafnyFile: string;
   expectedValue: number;

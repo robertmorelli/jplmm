@@ -1,15 +1,16 @@
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { defineConfig } from "vitest/config";
+import { mergeConfig } from "vitest/config";
 
-export default defineConfig({
+import base from "../../vitest.base.config.ts";
+
+export default mergeConfig(base, {
   resolve: {
-    extensions: [".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".json"],
     alias: {
-      "@jplmm/ast": resolve(__dirname, "../ast/src/index.ts"),
-      "@jplmm/grammar": resolve(__dirname, "../grammar/src/index.ts"),
-      "@jplmm/ir": resolve(__dirname, "../ir/src/index.ts"),
-      "@jplmm/frontend": resolve(__dirname, "../frontend/src/index.ts"),
+      "@jplmm/ast":      fileURLToPath(new URL("../ast/src/index.ts",      import.meta.url)),
+      "@jplmm/grammar":  fileURLToPath(new URL("../grammar/src/index.ts",  import.meta.url)),
+      "@jplmm/ir":       fileURLToPath(new URL("../ir/src/index.ts",       import.meta.url)),
+      "@jplmm/frontend": fileURLToPath(new URL("../frontend/src/index.ts", import.meta.url)),
     },
   },
 });

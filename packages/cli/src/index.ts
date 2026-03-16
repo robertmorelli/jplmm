@@ -49,7 +49,7 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
   const shouldAnalyzeProofs = shouldVerify || mode === "semantics";
   const shouldShowRefinements = mode !== "parse" && mode !== "typecheck";
 
-  let proofSummary: string[] = shouldShowRefinements
+  const proofSummary: string[] = shouldShowRefinements
     ? frontend.refinements.map((refinement) => renderRefinementSummary(refinement))
     : [];
   let analysisSummary: string[] = [];
@@ -260,7 +260,7 @@ export function main(argv: string[]): number {
     if (arg === "--disable-pass") {
       const pass = args[i + 1];
       if (!pass || !isDisableablePassName(pass)) {
-        // eslint-disable-next-line no-console
+         
         console.error(`Unknown or missing pass after --disable-pass. Expected one of: ${DISABLEABLE_PASSES.join(", ")}`);
         return 2;
       }
@@ -271,7 +271,7 @@ export function main(argv: string[]): number {
     if (arg.startsWith("--disable-pass=")) {
       const pass = arg.slice("--disable-pass=".length);
       if (!isDisableablePassName(pass)) {
-        // eslint-disable-next-line no-console
+         
         console.error(`Unknown pass '${pass}'. Expected one of: ${DISABLEABLE_PASSES.join(", ")}`);
         return 2;
       }
@@ -304,46 +304,46 @@ export function main(argv: string[]): number {
   const file = modeArg?.startsWith("-") ? fileArg : modeArg;
 
   if (!file) {
-    // eslint-disable-next-line no-console
+     
     console.error("Usage: jplmm [-p|-t|-v|-i|-s|-a|-r|-m] [--safe] [--disable-pass <name>] <file.jplmm>");
     return 2;
   }
 
   const report = runOnFile(file, mode, { experimental, safe, disablePasses });
   for (const d of report.diagnostics) {
-    // eslint-disable-next-line no-console
+     
     console.log(d);
   }
   for (const p of report.proofSummary) {
-    // eslint-disable-next-line no-console
+     
     console.log(p);
   }
   for (const line of report.analysisSummary) {
-    // eslint-disable-next-line no-console
+     
     console.log(line);
   }
   for (const p of report.optimizeSummary) {
-    // eslint-disable-next-line no-console
+     
     console.log(p);
   }
   for (const impl of report.implementationSummary) {
-    // eslint-disable-next-line no-console
+     
     console.log(impl);
   }
   if (report.semantics) {
-    // eslint-disable-next-line no-console
+     
     console.log(report.semantics);
   }
   if (report.wat) {
-    // eslint-disable-next-line no-console
+     
     console.log(report.wat);
   }
   if (report.nativeC) {
-    // eslint-disable-next-line no-console
+     
     console.log(report.nativeC);
   }
   for (const line of report.output) {
-    // eslint-disable-next-line no-console
+     
     console.log(line);
   }
   return report.ok ? 0 : 1;

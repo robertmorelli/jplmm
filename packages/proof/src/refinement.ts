@@ -1,5 +1,5 @@
 import { sameType as sameDeclaredType, type Cmd, type Param, type Type } from "@jplmm/ast";
-import type { IRExpr, IRFunction, IRProgram } from "@jplmm/ir";
+import type { IRFunction, IRProgram } from "@jplmm/ir";
 import { executeProgram, type RuntimeValue } from "@jplmm/optimize";
 import {
   INT32_MAX,

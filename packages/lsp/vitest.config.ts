@@ -1,10 +1,5 @@
-import { defineConfig } from "vitest/config";
+import { mergeConfig } from "vitest/config";
 
-export default defineConfig({
-  resolve: {
-    extensions: [".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".json"],
-  },
-  test: {
-    include: ["test/**/*.test.ts"],
-  },
-});
+import base from "../../vitest.base.config.ts";
+
+export default mergeConfig(base, {});

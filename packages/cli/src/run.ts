@@ -875,7 +875,7 @@ function isArrayValue(value: RuntimeValue): value is RuntimeArrayValue {
   return typeof value === "object" && value !== null && "kind" in value && value.kind === "array";
 }
 
-function sameDims(left: number[], right: number[]): boolean {
+function _sameDims(left: number[], right: number[]): boolean {
   return left.length === right.length && left.every((dim, idx) => dim === right[idx]);
 }
 

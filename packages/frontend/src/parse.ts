@@ -3,6 +3,7 @@ import type {
   Binding,
   Cmd,
   Expr,
+  FunctionKeyword,
   GasLimit,
   LValue,
   Param,
@@ -125,7 +126,7 @@ class Parser {
 
     return this.withSpan({
       tag: "fn_def",
-      keyword: startToken.text as import("@jplmm/ast").FunctionKeyword,
+      keyword: startToken.text as FunctionKeyword,
       name: nameToken.text,
       params,
       retType,
@@ -266,7 +267,7 @@ class Parser {
     return null;
   }
 
-  private parseType(options: { allowArrayExtentNames?: boolean } = {}): Type {
+  private parseType(_options: { allowArrayExtentNames?: boolean } = {}): Type {
     const t = this.peek();
     let base: Type;
     const intToken = this.acceptKeywordToken("int");

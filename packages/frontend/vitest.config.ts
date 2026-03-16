@@ -1,19 +1,14 @@
 import { fileURLToPath } from "node:url";
 
-import { defineConfig } from "vitest/config";
+import { mergeConfig } from "vitest/config";
 
-const astEntry = fileURLToPath(new URL("../ast/src/index.ts", import.meta.url));
-const grammarEntry = fileURLToPath(new URL("../grammar/src/index.ts", import.meta.url));
+import base from "../../vitest.base.config.ts";
 
-export default defineConfig({
+export default mergeConfig(base, {
   resolve: {
-    extensions: [".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".json"],
     alias: {
-      "@jplmm/ast": astEntry,
-      "@jplmm/grammar": grammarEntry,
+      "@jplmm/ast":     fileURLToPath(new URL("../ast/src/index.ts",     import.meta.url)),
+      "@jplmm/grammar": fileURLToPath(new URL("../grammar/src/index.ts", import.meta.url)),
     },
-  },
-  test: {
-    include: ["test/**/*.test.ts"],
   },
 });

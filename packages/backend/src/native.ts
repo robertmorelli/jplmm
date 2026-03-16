@@ -847,7 +847,7 @@ function normalizeScalarExprForType(expr: string, type: Type | undefined): strin
     return expr;
   }
   if (type.tag === "float") {
-    let out = `jplmm_nan_to_zero_f32(${expr})`;
+    const out = `jplmm_nan_to_zero_f32(${expr})`;
     const bounds = getScalarBounds(type);
     if (!bounds) {
       return out;

@@ -1,7 +1,6 @@
 import type { WatModuleSemantics } from "@jplmm/backend";
 import type { FrontendResult, RefinementReport } from "@jplmm/frontend";
 import {
-  buildCompilerSemantics,
   serializeExprSemantics,
   serializeSymValue,
   type SemanticsCompilerRecord,

@@ -1,4 +1,4 @@
-import type { Program } from "@jplmm/ast";
+import { type Program } from "@jplmm/ast";
 export type FunctionMetrics = {
     sourceComplexity: number;
     recSites: number;

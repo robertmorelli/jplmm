@@ -1,10 +1,12 @@
-import type { Type } from "@jplmm/ast";
-import type { IRExpr, IRProgram } from "@jplmm/ir";
-import { type ClosedFormImplementation, type OptimizeResult, type RangeAnalysisResult, type SerializedExprProvenance } from "@jplmm/optimize";
+import { type Cmd, type Program, type Type } from "@jplmm/ast";
+import { type IRExpr, type IRProgram } from "@jplmm/ir";
+import { type ClosedFormImplementation, type OptimizeResult, type SerializedExprProvenance } from "@jplmm/optimize";
 import { type Z3RunOptions } from "@jplmm/smt";
 import { type SymValue } from "./scalar";
 export type SemanticsCompilerRecord = {
+    schemaVersion: 1;
     floors: {
+        typedAst: SemanticsAstFloorRecord | null;
         raw: SemanticsIrFloorRecord;
         canonical: SemanticsIrFloorRecord;
         guardElided: SemanticsIrFloorRecord;
@@ -17,7 +19,17 @@ export type SemanticsCompilerRecord = {
     analyses: {
         canonicalRanges: SerializedRangeAnalysis;
         finalRanges: SerializedRangeAnalysis;
+        canonicalRangeFacts: Array<{
+            owner: string;
+            exprId: number;
+            rendered: string;
+            range: {
+                lo: number;
+                hi: number;
+            } | null;
+        }>;
         provenance: {
+            astToRaw: SerializedExprProvenance | null;
             rawToCanonical: SerializedExprProvenance;
             canonicalToGuardElided: SerializedExprProvenance;
             guardElidedToFinalOptimized: SerializedExprProvenance;
@@ -60,6 +72,41 @@ export type SemanticsIrFloorRecord = {
         analysis: SerializedIrFunctionAnalysis;
     }>;
 };
+export type SemanticsAstFloorRecord = {
+    label: "typed_source_ast";
+    program: Program;
+    typeMap: Record<string, Type>;
+    commands: Array<{
+        id: number;
+        tag: Cmd["tag"];
+        rendered: string;
+        semantics: string;
+        exprSemantics: Array<{
+            exprId: number;
+            rendered: string;
+            value: SerializedSymValue | null;
+            loweredExprId: number | null;
+        }>;
+    }>;
+    globals: Array<{
+        name: string;
+        rendered: string;
+        value: SerializedSymValue | null;
+        exprSemantics: Array<{
+            exprId: number;
+            rendered: string;
+            value: SerializedSymValue | null;
+            loweredExprId: number | null;
+        }>;
+    }>;
+    functions: Array<{
+        name: string;
+        keyword: string;
+        rendered: string[];
+        result: SerializedSymValue | null;
+        analysis: SerializedIrFunctionAnalysis;
+    }>;
+};
 export type SemanticsLutFloorRecord = {
     label: "lut_impl_semantics";
     functions: Array<{
@@ -75,8 +122,8 @@ export type SemanticsLutFloorRecord = {
     }>;
 };
 export type SemanticsEdgeRecord = {
-    from: SemanticsIrFloorRecord["label"] | SemanticsLutFloorRecord["label"] | "canonical_range_facts";
-    to: SemanticsIrFloorRecord["label"] | SemanticsLutFloorRecord["label"] | "canonical_range_facts";
+    from: SemanticsAstFloorRecord["label"] | SemanticsIrFloorRecord["label"] | SemanticsLutFloorRecord["label"] | "canonical_range_facts";
+    to: SemanticsAstFloorRecord["label"] | SemanticsIrFloorRecord["label"] | SemanticsLutFloorRecord["label"] | "canonical_range_facts";
     kind: "ir_refinement" | "implementation_refinement" | "analysis_soundness";
     certificate: SemanticsCertificateRecord | null;
     ok: boolean;
@@ -98,6 +145,11 @@ type SemanticsCertificateValidation = {
     detail: string;
 };
 export type SemanticsCertificateRecord = {
+    kind: "ast_lowering";
+    validation: SemanticsCertificateValidation & {
+        rebuiltMatchesRaw: boolean;
+    };
+} | {
     kind: "canonicalize";
     passOrder: OptimizeResult["stages"]["canonical"]["passOrder"];
     stats: OptimizeResult["stages"]["canonical"]["stats"];
@@ -116,6 +168,7 @@ export type SemanticsCertificateRecord = {
     };
 } | {
     kind: "range_analysis";
+    exprIds: number[];
     consumedExprIds: number[];
     validation: SemanticsCertificateValidation & {
         attachedExprIds: number[];
@@ -237,8 +290,21 @@ export type SerializedSymValue = {
     type: unknown;
     label: string;
 };
-export declare function buildCompilerSemantics(rawProgram: IRProgram, optimized: OptimizeResult, solverOptions?: Z3RunOptions): SemanticsCompilerRecord;
-export declare function serializeRangeAnalysis(result: RangeAnalysisResult): SerializedRangeAnalysis;
+export type CompilerAstSource = {
+    program: Program;
+    typeMap: Map<number, Type>;
+};
+export type CompilerSemanticsCheckRecord = {
+    ok: boolean;
+    summary: {
+        equivalent: number;
+        mismatch: number;
+        unproven: number;
+    };
+    edges: SemanticsEdgeRecord[];
+};
+export declare function buildCompilerSemantics(rawProgram: IRProgram, optimized: OptimizeResult, solverOptions?: Z3RunOptions, source?: CompilerAstSource | null): SemanticsCompilerRecord;
+export declare function checkCompilerSemanticsRecord(record: SemanticsCompilerRecord, solverOptions?: Z3RunOptions): CompilerSemanticsCheckRecord;
 export declare function serializePlainIrAnalysis(trace: {
     hasRec: boolean;
     paramValues: Map<string, SymValue>;

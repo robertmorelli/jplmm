@@ -1,5 +1,5 @@
 import { type DisableablePassName } from "@jplmm/optimize";
-export type CliMode = "parse" | "typecheck" | "verify" | "optimize" | "wat" | "native" | "run" | "semantics";
+export type CliMode = "parse" | "typecheck" | "verify" | "optimize" | "wat" | "native" | "run" | "semantics" | "check_semantics";
 export type CliOptions = {
     experimental?: boolean;
     safe?: boolean;

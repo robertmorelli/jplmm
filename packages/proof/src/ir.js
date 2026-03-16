@@ -1,10 +1,9 @@
-import { getArrayExtentNames, renderType as renderDeclaredType } from "@jplmm/ast";
+import { NAN_GUARDED_BUILTINS, getArrayExtentNames, renderType as renderDeclaredType } from "@jplmm/ast";
 import { buildIR, } from "@jplmm/ir";
 import { canonicalizeProgram } from "@jplmm/optimize";
 import { checkSat } from "@jplmm/smt";
 import { withHardTimeout } from "@jplmm/smt";
 import { buildMeasureCounterexampleQuery, canEncodeScalarExprWithSmt, extendSymbolicSubstitution, isInterpretedCall, normalizeValueForType, isSupportedRecArgValue, makeOpaque, queryCounterexample, arrayDims, readSymbolicArray, renderScalarExpr, scalarExprType, scalarTag, selectValue, sameType, substituteScalar, substituteValue, symbolizeAbstractValue, symbolizeParamValue, } from "./scalar";
-const NAN_GUARDED_BUILTINS = new Set(["sqrt", "log", "pow", "asin", "acos"]);
 export function buildCanonicalProgram(program, typeMap) {
     return canonicalizeProgram(buildIR(program, typeMap)).program;
 }

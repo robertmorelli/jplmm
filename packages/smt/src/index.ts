@@ -308,7 +308,7 @@ function tokenizeSExpr(source: string): string[] {
       tokens.push(char);
       continue;
     }
-    if (/\s/.test(char)) {
+    if (char === " " || char === "\t" || char === "\r" || char === "\n") {
       if (current.length > 0) {
         tokens.push(current);
         current = "";
@@ -323,6 +323,8 @@ function tokenizeSExpr(source: string): string[] {
   return tokens;
 }
 
+const INFIX_OPS = new Set(["+", "-", "*", "/"]);
+
 function renderSExpr(expr: SExpr): string {
   if (typeof expr === "string") {
     return expr;
@@ -330,7 +332,7 @@ function renderSExpr(expr: SExpr): string {
   if (expr.length === 2 && expr[0] === "-") {
     return `-${renderSExpr(expr[1]!)}`;
   }
-  if (expr.length === 3 && typeof expr[0] === "string" && ["+", "-", "*", "/"].includes(expr[0])) {
+  if (expr.length === 3 && typeof expr[0] === "string" && INFIX_OPS.has(expr[0])) {
     return `${renderSExpr(expr[1]!)} ${expr[0]} ${renderSExpr(expr[2]!)}`;
   }
   return `(${expr.map((item) => renderSExpr(item)).join(" ")})`;

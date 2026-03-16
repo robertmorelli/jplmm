@@ -1,4 +1,4 @@
-import type { Program } from "@jplmm/ast";
+import type { Program, Type } from "@jplmm/ast";
 
 import type { Diagnostic } from "./errors";
 import { parseSource } from "./parse";

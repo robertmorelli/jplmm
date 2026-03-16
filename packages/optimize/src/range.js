@@ -1,6 +1,4 @@
-import { getArrayExtentNames, getScalarBounds } from "@jplmm/ast";
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
+import { INT32_MAX, INT32_MIN, getArrayExtentNames, getScalarBounds } from "@jplmm/ast";
 export function analyzeRanges(program, parameterRangeHints = {}) {
     const rangeMap = new Map();
     const cardinalityMap = new Map();

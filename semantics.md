@@ -47,9 +47,10 @@ So today the system is unified around:
 The machine-readable compiler semantics dump now also exposes an adjacent-floor
 ladder for non-backend compilation stages:
 
+- `typed_source_ast`
 - `raw_ir`
 - `canonical_ir`
-- `canonical_range_facts` for the canonical range facts guard elimination actually consumes
+- `canonical_range_facts` for the full canonical range map
 - `guard_elided_ir`
 - `final_optimized_ir`
 - `closed_form_impl_ir` when a closed-form implementation is selected
@@ -64,6 +65,7 @@ summaries:
 
 The current verified adjacent-floor edges are:
 
+- `typed_source_ast -> raw_ir`
 - `raw_ir -> canonical_ir`
 - `canonical_ir -> canonical_range_facts`
 - `canonical_ir -> guard_elided_ir`
@@ -90,17 +92,18 @@ Closed-form countdown selection is intentionally limited to explicitly
 nonnegative bounded countdown parameters like `int(0,_)`. The older unbounded
 match was not sound over all JPL-- integers.
 
-The `canonical_range_facts` edge is intentionally scoped:
+The `canonical_range_facts` edge now covers the full canonical range map:
 
-- it certifies the subset of canonical range facts that guard elimination actually consumed
-- the semantics JSON records the consumed expr ids plus owner function, rendered canonical expression, and interval
-- it does not yet claim that the entire canonical range map is globally proved
+- it certifies every canonical range fact emitted by the canonical range analysis
+- the semantics JSON records the full canonical range-fact set plus the guard-consumed subset
+- the guard-consumed subset is still carried explicitly because guard elimination certificates depend on it locally
 
 Each adjacent-floor edge now also carries a pass-local certificate record in the
 machine-readable semantics JSON:
 
+- `typed_source_ast -> raw_ir` includes an AST-lowering certificate that rebuilds raw IR from the typed AST and checks that it matches the stored raw floor
 - `raw_ir -> canonical_ir` includes the canonicalization pass order, emitted rewrite stats, and a validator that rechecks the derived operator-count deltas and target canonical form
-- `canonical_ir -> canonical_range_facts` records the exact consumed expr ids and validates that they are attached to canonical IR expressions
+- `canonical_ir -> canonical_range_facts` records the full canonical expr-id set, the consumed subset guard elimination used, and validates that those facts are attached to canonical IR expressions
 - `canonical_ir -> guard_elided_ir` records the consumed fact ids plus removed guard counts and validates them against the structural diff
 - `guard_elided_ir -> final_optimized_ir` records the fact that the executable program is unchanged and later choices are artifact-level implementations
 - `final_optimized_ir -> closed_form_impl_ir` records the selected closed-form matcher instances and rechecks that the matcher rediscovers them
@@ -109,21 +112,30 @@ machine-readable semantics JSON:
 Those ladder schemas and validators are now shared proof-side code, not CLI-only
 logic:
 
-- the floor and edge builders live in [packages/proof/src/compiler_ladder.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder.ts)
+- the floor and edge builders live in [packages/proof/src/compiler_ladder.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder.ts) and helper modules such as [packages/proof/src/compiler_ladder_certificates.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder_certificates.ts) and [packages/proof/src/compiler_ladder_ranges.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder_ranges.ts)
 - the CLI consumes that shared ladder module instead of rebuilding compiler semantics on its own
 
-The optimizer also now has an opt-in proof-gated admission path for locally
-checkable pass certificates:
+The optimizer now has a proof-gated admission path for locally checkable
+non-research pass certificates:
 
 - [packages/optimize/src/certificates.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/optimize/src/certificates.ts) exports independent validators for canonicalization, guard elimination, closed form, LUT, and consumed range-fact certificates
-- [packages/optimize/src/pipeline.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/optimize/src/pipeline.ts) can be asked to keep the previous floor when one of those local certificate checks fails instead of blindly admitting the pass result
-- today that path is opt-in via `proofGateCertificates`; the default optimizer behavior is unchanged
+- [packages/optimize/src/pipeline.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/optimize/src/pipeline.ts) now keeps the previous floor when one of those local certificate checks fails instead of blindly admitting the pass result
+- that proof-gating is now the default for non-research passes; it can still be disabled explicitly with `proofGateCertificates: false`
 
-The ladder now also records lightweight expr ancestry between adjacent IR floors:
+The ladder now also records structured expr rewrite provenance between adjacent
+IR floors:
 
 - each optimize result carries provenance maps from lower-floor expr ids back to the upper-floor expr ids they came from
-- the semantics JSON serializes those provenance maps for `raw -> canonical`, `canonical -> guard_elided`, and `guard_elided -> final_optimized`
-- this is intentionally a simple ancestry map, not yet a full rewrite proof
+- each entry records both the source expr ids, whether the lower-floor node was `preserved`, `rewritten`, or `generated`, and a coarse rewrite-rule label
+- the semantics JSON serializes those provenance maps for `ast -> raw`, `raw -> canonical`, `canonical -> guard_elided`, and `guard_elided -> final_optimized`
+
+There is also now a standalone ladder checker path:
+
+- [packages/proof/src/compiler_ladder.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder.ts) exports a compiler-ladder rechecker that revalidates the stored edges and certificates from a dumped semantics bundle
+- [packages/cli/src/semantics.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/cli/src/semantics.ts) exposes bundle checking for semantics JSON
+- the CLI supports `-c <semantics.json>` to recheck a dumped semantics bundle without recompiling source
+- semantics bundles now carry explicit schema versions so external tools can reject incompatible dumps
+- the semantics debug bundle also records source-level top-level command traces for `print`, `show`, `read image`, `write image`, `time`, and implicit `main()`
 
 ## 2. Canonical IR Is The Main Proof Boundary
 

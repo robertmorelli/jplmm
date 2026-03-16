@@ -1,6 +1,4 @@
-import { getArrayExtentNames, getScalarBounds } from "@jplmm/ast";
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
+import { INT32_MAX, INT32_MIN, getArrayExtentNames, getScalarBounds } from "@jplmm/ast";
 export function executeProgram(program, fnName, args, options = {}) {
     const ctx = {
         functions: new Map(program.functions.map((fn) => [fn.name, fn])),
@@ -464,7 +462,7 @@ function indexArrayValue(arrayValue, indices, resultType, structs) {
     let offset = 0;
     for (let i = 0; i < indices.length; i += 1) {
         const idx = clampIndexToDim(indices[i], arrayValue.dims[i]);
-        const dim = arrayValue.dims[i];
+        const _dim = arrayValue.dims[i];
         offset += idx * strideOf(arrayValue.dims, i);
     }
     if (indices.length === arrayValue.dims.length) {

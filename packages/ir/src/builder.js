@@ -1,4 +1,4 @@
-import { getArrayExtentNames } from "@jplmm/ast";
+import { getArrayExtentNames, unwrapTimedDefinition } from "@jplmm/ast";
 import { FLOAT_T, INT_T, VOID_T } from "./types";
 export function buildIR(program, typeMap) {
     const fnSigs = collectFnSigs(program);
@@ -68,15 +68,6 @@ function collectStructDefs(program) {
         out.set(structDef.name, structDef);
     }
     return out;
-}
-function unwrapTimedDefinition(cmd, tag) {
-    if (cmd.tag === tag) {
-        return cmd;
-    }
-    if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-        return cmd.cmd;
-    }
-    return null;
 }
 function lowerFunction(cmd, fnSigs, structDefs, typeMap) {
     const env = new Map();

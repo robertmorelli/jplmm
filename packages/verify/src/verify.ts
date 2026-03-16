@@ -1,4 +1,4 @@
-import type { Cmd, Program, Type } from "@jplmm/ast";
+import { unwrapTimedDefinition, type Program, type Type } from "@jplmm/ast";
 import type { IRFunction } from "@jplmm/ir";
 import { typecheckProgram } from "@jplmm/frontend";
 import {
@@ -156,18 +156,6 @@ function verifyFunction(
   };
 }
 
-function unwrapTimedDefinition<TTag extends "fn_def">(
-  cmd: Cmd,
-  tag: TTag,
-): Extract<Cmd, { tag: TTag }> | null {
-  if (cmd.tag === tag) {
-    return cmd as Extract<Cmd, { tag: TTag }>;
-  }
-  if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-    return cmd.cmd as Extract<Cmd, { tag: TTag }>;
-  }
-  return null;
-}
 
 function resolveProofTimeoutMs(proofTimeoutMs: number | undefined): number | undefined {
   if (proofTimeoutMs === undefined) {

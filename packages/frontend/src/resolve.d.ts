@@ -1,4 +1,4 @@
-import type { Program } from "@jplmm/ast";
+import { type Program } from "@jplmm/ast";
 import { type Diagnostic } from "./errors";
 type ResolveResult = {
     program: Program;

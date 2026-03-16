@@ -1,4 +1,4 @@
-import { getArrayExtentNames, type Binding, type Cmd, type Expr, type LValue, type Program, type Stmt, type Type } from "@jplmm/ast";
+import { getArrayExtentNames, unwrapTimedDefinition, type Binding, type Cmd, type Expr, type LValue, type Program, type Stmt, type Type } from "@jplmm/ast";
 
 import type { IRBinding, IRExpr, IRFunction, IRGlobalLet, IRProgram, IRStmt, IRStructDef } from "./nodes";
 import { FLOAT_T, INT_T, VOID_T } from "./types";
@@ -92,18 +92,6 @@ function collectStructDefs(program: Program): Map<string, Extract<Cmd, { tag: "s
   return out;
 }
 
-function unwrapTimedDefinition<TTag extends "fn_def" | "struct_def">(
-  cmd: Cmd,
-  tag: TTag,
-): Extract<Cmd, { tag: TTag }> | null {
-  if (cmd.tag === tag) {
-    return cmd as Extract<Cmd, { tag: TTag }>;
-  }
-  if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-    return cmd.cmd as Extract<Cmd, { tag: TTag }>;
-  }
-  return null;
-}
 
 function lowerFunction(
   cmd: Extract<Cmd, { tag: "fn_def" }>,

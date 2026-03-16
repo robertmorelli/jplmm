@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
 
+import { BUILTIN_FUNCTIONS } from "@jplmm/ast";
 import { runOnSource, type CliMode } from "@jplmm/cli";
 import { runFrontend, type Diagnostic as FrontendDiagnostic } from "@jplmm/frontend";
 import type { DisableablePassName } from "@jplmm/optimize";
@@ -42,25 +43,6 @@ const JPLMM_SELECTORS: vscode.DocumentSelector = [
   ...JPLMM_EXTENSIONS.map((ext) => ({ pattern: `**/*${ext}` })),
 ];
 const OUTPUT_NAME = "JPLMM";
-const BUILTIN_FUNCTIONS = new Set([
-  "sqrt",
-  "exp",
-  "sin",
-  "cos",
-  "tan",
-  "asin",
-  "acos",
-  "atan",
-  "log",
-  "pow",
-  "atan2",
-  "to_float",
-  "to_int",
-  "max",
-  "min",
-  "abs",
-  "clamp",
-]);
 const DISABLEABLE_PASSES = new Set<DisableablePassName>([
   "guard_elimination",
   "closed_form",
@@ -155,9 +137,10 @@ export function activate(context: vscode.ExtensionContext): void {
     if (cached && cached.version === document.version) {
       return cached.frontend;
     }
+    const editorProofTimeoutMs = readEditorProofTimeoutMs();
     const frontend = runFrontend(
       document.getText(),
-      readEditorProofTimeoutMs() === undefined ? {} : { proofTimeoutMs: readEditorProofTimeoutMs() },
+      editorProofTimeoutMs !== undefined ? { proofTimeoutMs: editorProofTimeoutMs } : {},
     );
     trace(`frontend uri=${document.uri.toString()} diagnostics=${frontend.diagnostics.length}`);
     frontendCache.set(document.uri.toString(), { version: document.version, frontend });
@@ -178,13 +161,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     const config = vscode.workspace.getConfiguration("jplmm");
+    const inlineProofTimeoutMs = readEditorProofTimeoutMs(config);
     const report = runOnSource(document.getText(), "run", {
       cwd: resolveDocumentDirectory(document) ?? process.cwd(),
       experimental: config.get<boolean>("run.experimental", true),
       safe: config.get<boolean>("run.safe", false),
       disablePasses: readDisablePassesConfig(config),
       verifyBeforeRun: config.get<boolean>("run.verifyBeforeRun", true),
-      ...(readEditorProofTimeoutMs(config) === undefined ? {} : { proofTimeoutMs: readEditorProofTimeoutMs(config) }),
+      ...(inlineProofTimeoutMs !== undefined ? { proofTimeoutMs: inlineProofTimeoutMs } : {}),
     });
     inlineResultCache.set(key, { version: document.version, report });
     return report;
@@ -203,10 +187,11 @@ export function activate(context: vscode.ExtensionContext): void {
       return null;
     }
 
+    const verifyProofTimeoutMs = readEditorProofTimeoutMs();
     const verification = verifyProgram(
       frontend.program,
       frontend.typeMap,
-      readEditorProofTimeoutMs() === undefined ? {} : { proofTimeoutMs: readEditorProofTimeoutMs() },
+      verifyProofTimeoutMs !== undefined ? { proofTimeoutMs: verifyProofTimeoutMs } : {},
     );
     trace(`verify uri=${document.uri.toString()} diagnostics=${verification.diagnostics.length}`);
     verificationCache.set(key, { version: document.version, verification });
@@ -584,13 +569,14 @@ export function activate(context: vscode.ExtensionContext): void {
       output.appendLine(`> ${mode} ${document.uri.fsPath || document.uri.toString()}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`);
 
       try {
+        const runProofTimeoutMs = readRunProofTimeoutMs(config);
         const report = runOnSource(source, mode, {
           cwd,
           experimental,
           safe,
           disablePasses,
           verifyBeforeRun,
-          ...(readRunProofTimeoutMs(config) === undefined ? {} : { proofTimeoutMs: readRunProofTimeoutMs(config) }),
+          ...(runProofTimeoutMs !== undefined ? { proofTimeoutMs: runProofTimeoutMs } : {}),
         });
         writeReport(output, report, mode);
         if (!report.ok) {
@@ -758,14 +744,14 @@ async function showWatDebugDocument(uri: vscode.Uri | undefined, output: vscode.
     return;
   }
 
+  const watConfig = vscode.workspace.getConfiguration("jplmm");
+  const watProofTimeoutMs = readRunProofTimeoutMs(watConfig);
   const report = runOnSource(document.getText(), "wat", {
     cwd,
-    experimental: vscode.workspace.getConfiguration("jplmm").get<boolean>("run.experimental", true),
-    safe: vscode.workspace.getConfiguration("jplmm").get<boolean>("run.safe", false),
-    disablePasses: readDisablePassesConfig(vscode.workspace.getConfiguration("jplmm")),
-    ...(readRunProofTimeoutMs(vscode.workspace.getConfiguration("jplmm")) === undefined
-      ? {}
-      : { proofTimeoutMs: readRunProofTimeoutMs(vscode.workspace.getConfiguration("jplmm")) }),
+    experimental: watConfig.get<boolean>("run.experimental", true),
+    safe: watConfig.get<boolean>("run.safe", false),
+    disablePasses: readDisablePassesConfig(watConfig),
+    ...(watProofTimeoutMs !== undefined ? { proofTimeoutMs: watProofTimeoutMs } : {}),
   });
   if (!report.ok || !report.wat) {
     output.show(true);
@@ -798,15 +784,15 @@ async function showSemanticsDebugDocument(uri: vscode.Uri | undefined, output: v
     return;
   }
 
+  const semConfig = vscode.workspace.getConfiguration("jplmm");
+  const semProofTimeoutMs = readRunProofTimeoutMs(semConfig);
   const report = runOnSource(document.getText(), "semantics", {
     cwd,
-    experimental: vscode.workspace.getConfiguration("jplmm").get<boolean>("run.experimental", true),
-    safe: vscode.workspace.getConfiguration("jplmm").get<boolean>("run.safe", false),
-    disablePasses: readDisablePassesConfig(vscode.workspace.getConfiguration("jplmm")),
+    experimental: semConfig.get<boolean>("run.experimental", true),
+    safe: semConfig.get<boolean>("run.safe", false),
+    disablePasses: readDisablePassesConfig(semConfig),
     verifyBeforeRun: true,
-    ...(readRunProofTimeoutMs(vscode.workspace.getConfiguration("jplmm")) === undefined
-      ? {}
-      : { proofTimeoutMs: readRunProofTimeoutMs(vscode.workspace.getConfiguration("jplmm")) }),
+    ...(semProofTimeoutMs !== undefined ? { proofTimeoutMs: semProofTimeoutMs } : {}),
   });
   if (!report.semantics) {
     output.show(true);

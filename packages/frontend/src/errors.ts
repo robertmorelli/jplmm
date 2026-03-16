@@ -36,3 +36,19 @@ export function warning(
   }
   return { message, start, end, severity: "warning" };
 }
+
+export function nodeError(
+  node: { start?: number; end?: number } | null | undefined,
+  message: string,
+  code?: string,
+): Diagnostic {
+  return error(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
+}
+
+export function nodeWarning(
+  node: { start?: number; end?: number } | null | undefined,
+  message: string,
+  code?: string,
+): Diagnostic {
+  return warning(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
+}

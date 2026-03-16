@@ -1,8 +1,6 @@
-import { normalizedScalarBounds } from "@jplmm/ast";
+import { INT32_MAX, INT32_MIN, normalizedScalarBounds } from "@jplmm/ast";
 import { REMOVED_KEYWORDS, tokenize } from "@jplmm/grammar";
 import { error } from "./errors";
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
 const UINT32_MAX = 4294967296;
 class Parser {
     tokens;
@@ -210,7 +208,7 @@ class Parser {
         this.advance();
         return null;
     }
-    parseType(options = {}) {
+    parseType(_options = {}) {
         const t = this.peek();
         let base;
         const intToken = this.acceptKeywordToken("int");

@@ -13,13 +13,11 @@ import type {
   StructField,
   Type,
 } from "@jplmm/ast";
-import { normalizedScalarBounds } from "@jplmm/ast";
+import { INT32_MAX, INT32_MIN, normalizedScalarBounds } from "@jplmm/ast";
 import { REMOVED_KEYWORDS, tokenize, type Token } from "@jplmm/grammar";
 
 import { error, type Diagnostic } from "./errors";
 
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
 const UINT32_MAX = 4294967296;
 
 type ParseResult = {

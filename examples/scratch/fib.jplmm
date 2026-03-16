@@ -20,17 +20,19 @@ ref fib(x : int(0,_)) : int {
     ret max(res, rec(x - 1) + rec(x - 2))
 }
 
-ref fib(x : int(0,_)) : int {
-    rad x
-    ret [0,1][x]
-    ret max(res, sum[i : 2] rec(x - (i + 1)))
-}
 
-ref fib(x : int(0,_)) : int {
-    rad x
-    ret min(1,x)
-    ret max(res, rec(x - 1) + rec(x - 2))
-}
+
+// ref fib(x : int(0,_)) : int {
+//     rad x
+//     ret [0,1][x]
+//     ret max(res, sum[i : 2] rec(x - (i + 1)))
+// }
+
+// ref fib(x : int(0,_)) : int {
+//     rad x
+//     ret min(1,x)
+//     ret max(res, rec(x - 1) + rec(x - 2))
+// }
 
 // ref fib(x : int) : int {
 //     ret clamp(x, 0, 1)

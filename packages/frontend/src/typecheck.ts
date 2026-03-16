@@ -1,9 +1,12 @@
 import {
+  INT32_MAX,
+  INT32_MIN,
   eraseScalarBounds,
   getArrayExtentNames,
   isNumericType,
   renderType,
   sameTypeShape,
+  unwrapTimedDefinition,
   type Argument,
   type Binding,
   type Cmd,
@@ -14,7 +17,7 @@ import {
   type Type,
 } from "@jplmm/ast";
 
-import { error, type Diagnostic } from "./errors";
+import { nodeError, type Diagnostic } from "./errors";
 
 type TypecheckResult = {
   program: Program;
@@ -35,8 +38,7 @@ const INT_T: Type = { tag: "int" };
 const FLOAT_T: Type = { tag: "float" };
 const VOID_T: Type = { tag: "void" };
 const IMAGE_T: Type = { tag: "array", element: INT_T, dims: 3 };
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
+const GAS_LIMIT_MAX = 2 ** 32;
 
 export function typecheckProgram(program: Program): TypecheckResult {
   const diagnostics: Diagnostic[] = [];
@@ -87,11 +89,11 @@ export function typecheckProgram(program: Program): TypecheckResult {
         if (stmt.tag === "gas") {
           if (
             stmt.limit !== "inf" &&
-            (!Number.isInteger(stmt.limit) || stmt.limit < 0 || stmt.limit > 4294967296)
-        ) {
-          diagnostics.push(nodeError(stmt, "gas N requires an integer literal in [0, 2^32]", "GAS_LIT"));
+            (!Number.isInteger(stmt.limit) || stmt.limit < 0 || stmt.limit > GAS_LIMIT_MAX)
+          ) {
+            diagnostics.push(nodeError(stmt, "gas N requires an integer literal in [0, 2^32]", "GAS_LIT"));
+          }
         }
-      }
       }
       continue;
     }
@@ -260,18 +262,6 @@ function collectStructDefs(program: Program): Map<string, StructField[]> {
   return out;
 }
 
-function unwrapTimedDefinition<TTag extends "fn_def" | "struct_def">(
-  cmd: Cmd,
-  tag: TTag,
-): Extract<Cmd, { tag: TTag }> | null {
-  if (cmd.tag === tag) {
-    return cmd as Extract<Cmd, { tag: TTag }>;
-  }
-  if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-    return cmd.cmd as Extract<Cmd, { tag: TTag }>;
-  }
-  return null;
-}
 
 function inferExpr(
   expr: Expr,
@@ -747,12 +737,4 @@ function isWritableImageType(type: Type): boolean {
     return false;
   }
   return type.dims === 2 || type.dims === 3;
-}
-
-function nodeError(
-  node: { start?: number; end?: number } | null | undefined,
-  message: string,
-  code?: string,
-): Diagnostic {
-  return error(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
 }

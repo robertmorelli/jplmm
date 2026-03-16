@@ -1,11 +1,10 @@
-import { eraseScalarBounds, getArrayExtentNames, isNumericType, renderType, sameTypeShape, } from "@jplmm/ast";
-import { error } from "./errors";
+import { INT32_MAX, INT32_MIN, eraseScalarBounds, getArrayExtentNames, isNumericType, renderType, sameTypeShape, unwrapTimedDefinition, } from "@jplmm/ast";
+import { nodeError } from "./errors";
 const INT_T = { tag: "int" };
 const FLOAT_T = { tag: "float" };
 const VOID_T = { tag: "void" };
 const IMAGE_T = { tag: "array", element: INT_T, dims: 3 };
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
+const GAS_LIMIT_MAX = 2 ** 32;
 export function typecheckProgram(program) {
     const diagnostics = [];
     const typeMap = new Map();
@@ -46,7 +45,7 @@ export function typecheckProgram(program) {
                 }
                 if (stmt.tag === "gas") {
                     if (stmt.limit !== "inf" &&
-                        (!Number.isInteger(stmt.limit) || stmt.limit < 0 || stmt.limit > 4294967296)) {
+                        (!Number.isInteger(stmt.limit) || stmt.limit < 0 || stmt.limit > GAS_LIMIT_MAX)) {
                         diagnostics.push(nodeError(stmt, "gas N requires an integer literal in [0, 2^32]", "GAS_LIT"));
                     }
                 }
@@ -170,15 +169,6 @@ function collectStructDefs(program) {
         out.set(definition.name, definition.fields);
     }
     return out;
-}
-function unwrapTimedDefinition(cmd, tag) {
-    if (cmd.tag === tag) {
-        return cmd;
-    }
-    if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-        return cmd.cmd;
-    }
-    return null;
 }
 function inferExpr(expr, env, fnSigs, structDefs, diagnostics, typeMap, fnCtx) {
     let out = VOID_T;
@@ -577,8 +567,5 @@ function isWritableImageType(type) {
         return false;
     }
     return type.dims === 2 || type.dims === 3;
-}
-function nodeError(node, message, code) {
-    return error(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
 }
 //# sourceMappingURL=typecheck.js.map

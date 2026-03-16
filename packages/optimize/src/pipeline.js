@@ -9,7 +9,7 @@ import { buildExprProvenance } from "./provenance";
 import { analyzeRanges } from "./range";
 export function optimizeProgram(program, options = {}) {
     const reports = [];
-    const proofGate = options.proofGateCertificates === true;
+    const proofGate = options.proofGateCertificates !== false;
     const canonicalCandidate = canonicalizeProgram(program);
     let canonical = canonicalCandidate;
     const canonicalCertificate = {
@@ -318,6 +318,7 @@ export function optimizeProgram(program, options = {}) {
                 stats: canonical.stats,
             },
             rangeAnalysis: {
+                exprIds: [...canonicalRangeResult.rangeMap.keys()].sort((left, right) => left - right),
                 consumedExprIds: [...guardResult.usedRangeExprIds],
             },
             guardElimination: guardCertificate,
@@ -344,9 +345,9 @@ export function optimizeProgram(program, options = {}) {
             },
         },
         provenance: {
-            rawToCanonical: buildExprProvenance(program, canonical.program),
-            canonicalToGuardElided: buildExprProvenance(canonical.program, guardResult.program),
-            guardElidedToFinalOptimized: buildExprProvenance(guardResult.program, current),
+            rawToCanonical: buildExprProvenance(program, canonical.program, "canonicalize"),
+            canonicalToGuardElided: buildExprProvenance(canonical.program, guardResult.program, "guard_elimination"),
+            guardElidedToFinalOptimized: buildExprProvenance(guardResult.program, current, "identity"),
         },
     };
 }

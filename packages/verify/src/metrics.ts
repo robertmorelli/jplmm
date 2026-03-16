@@ -1,4 +1,4 @@
-import type { Cmd, Expr, Program, StructField, Type } from "@jplmm/ast";
+import { unwrapTimedDefinition, type Cmd, type Expr, type Program, type StructField, type Type } from "@jplmm/ast";
 
 export type FunctionMetrics = {
   sourceComplexity: number;
@@ -152,15 +152,3 @@ function renderBranchingSeries(recSites: number, depth: string): string {
   return `sum_{i=0..${depth}} ${recSites}^i`;
 }
 
-function unwrapTimedDefinition<TTag extends "fn_def" | "struct_def">(
-  cmd: Cmd,
-  tag: TTag,
-): Extract<Cmd, { tag: TTag }> | null {
-  if (cmd.tag === tag) {
-    return cmd as Extract<Cmd, { tag: TTag }>;
-  }
-  if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-    return cmd.cmd as Extract<Cmd, { tag: TTag }>;
-  }
-  return null;
-}

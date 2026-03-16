@@ -1,3 +1,4 @@
+import { unwrapTimedDefinition } from "@jplmm/ast";
 export function analyzeProgramMetrics(program) {
     const metrics = new Map();
     const structDefs = collectStructDefs(program);
@@ -126,14 +127,5 @@ function renderBranchingSeries(recSites, depth) {
         return `${depth} + 1`;
     }
     return `sum_{i=0..${depth}} ${recSites}^i`;
-}
-function unwrapTimedDefinition(cmd, tag) {
-    if (cmd.tag === tag) {
-        return cmd;
-    }
-    if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-        return cmd.cmd;
-    }
-    return null;
 }
 //# sourceMappingURL=metrics.js.map

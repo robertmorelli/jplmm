@@ -76,11 +76,11 @@ export function validateRangeAnalysisPassCertificate(
   certificate: OptimizeResult["certificates"]["rangeAnalysis"],
 ): OptimizeCertificateValidation {
   const attached = new Set(collectProgramExprIds(program));
-  const missing = [...new Set(certificate.consumedExprIds)].filter((exprId) => !attached.has(exprId));
+  const missing = [...new Set(certificate.exprIds)].filter((exprId) => !attached.has(exprId));
   return {
     ok: missing.length === 0,
     detail: missing.length === 0
-      ? "all downstream-consumed range facts attach to canonical expressions"
+      ? "all emitted canonical range facts attach to canonical expressions"
       : `range certificate references unattached expr ids: ${missing.join(", ")}`,
   };
 }
@@ -103,6 +103,7 @@ export function validateGuardEliminationPassCertificate(
     };
   }
   return validateRangeAnalysisPassCertificate(canonicalProgram, {
+    exprIds: certificate.usedRangeExprIds,
     consumedExprIds: certificate.usedRangeExprIds,
   });
 }

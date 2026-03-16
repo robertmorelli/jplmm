@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { getArrayExtentNames, getScalarBounds, type Type } from "@jplmm/ast";
+import { INT32_MAX, INT32_MIN, getArrayExtentNames, getScalarBounds, type Type } from "@jplmm/ast";
 import type { IRExpr, IRFunction, IRProgram, IRStructDef } from "@jplmm/ir";
 import type {
   AitkenImplementation,
@@ -52,9 +52,6 @@ type NativeModuleContext = {
   structs: Map<string, IRStructDef>;
   functionSymbols: Map<string, string>;
 };
-
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
 
 function createNativeModuleContext(program: IRProgram): NativeModuleContext {
   const structs = new Map(program.structs.map((struct) => [struct.name, struct] as const));

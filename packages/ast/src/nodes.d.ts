@@ -160,4 +160,9 @@ export type Cmd = (SourceSpan & {
 export type Program = {
     commands: Cmd[];
 };
+export declare const BUILTIN_FUNCTIONS: Set<string>;
+export declare const NAN_GUARDED_BUILTINS: Set<string>;
+export declare function unwrapTimedDefinition<TTag extends "fn_def" | "struct_def">(cmd: Cmd, tag: TTag): Extract<Cmd, {
+    tag: TTag;
+}> | null;
 //# sourceMappingURL=nodes.d.ts.map

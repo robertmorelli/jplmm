@@ -1,3 +1,4 @@
+import { NAN_GUARDED_BUILTINS } from "@jplmm/ast";
 import { isFloatType, isIntType } from "@jplmm/ir";
 const DEFAULT_STATS = {
     totalDivInserted: 0,
@@ -9,7 +10,6 @@ const DEFAULT_STATS = {
     satNegInserted: 0,
     zeroDivisorConstantFolded: 0,
 };
-const NAN_GUARDED_BUILTINS = new Set(["sqrt", "log", "pow", "asin", "acos"]);
 export function canonicalizeProgram(program) {
     const passOrder = ["total_arithmetic", "saturating_arithmetic"];
     const stats = { ...DEFAULT_STATS };

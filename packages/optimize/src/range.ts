@@ -1,10 +1,7 @@
-import { getArrayExtentNames, getScalarBounds, type Type } from "@jplmm/ast";
+import { INT32_MAX, INT32_MIN, getArrayExtentNames, getScalarBounds, type Type } from "@jplmm/ast";
 import type { IRExpr, IRProgram } from "@jplmm/ir";
 
 import type { Interval, ParameterRangeHints, RangeAnalysisResult } from "./types";
-
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
 
 export function analyzeRanges(
   program: IRProgram,

@@ -5,17 +5,35 @@ import { runFrontend } from "@jplmm/frontend";
 import { buildIR } from "@jplmm/ir";
 import { optimizeProgram } from "@jplmm/optimize";
 import { analyzeProgramMetrics, verifyProgram } from "@jplmm/verify";
-import { executeTopLevelProgram } from "./run";
-import { buildCompilerSemantics, buildSemanticsDebugData, renderSemanticsDebugData } from "./semantics";
+import { executeTopLevelProgram, traceTopLevelProgram } from "./run";
+import { buildCompilerSemantics, buildSemanticsDebugData, checkSemanticsDebugDataBundle, renderSemanticsDebugData, } from "./semantics";
 const DEFAULT_CLI_PROOF_TIMEOUT_MS = 2000;
 export function runOnSource(source, mode, options = {}) {
+    if (mode === "check_semantics") {
+        const timeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
+        const checked = checkSemanticsDebugDataBundle(source, timeoutMs === undefined ? {} : { timeoutMs });
+        return {
+            mode,
+            diagnostics: checked.ok ? [] : [`ERROR: ${checked.message}`],
+            proofSummary: [],
+            analysisSummary: [],
+            optimizeSummary: [],
+            implementationSummary: [],
+            semantics: `${JSON.stringify(checked, null, 2)}\n`,
+            wat: undefined,
+            nativeC: undefined,
+            output: [],
+            wroteFiles: [],
+            ok: checked.ok,
+        };
+    }
     const proofTimeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
     const frontend = runFrontend(source, proofTimeoutMs === undefined ? {} : { proofTimeoutMs });
     const diagnostics = frontend.diagnostics.map((d) => `${d.severity.toUpperCase()}: ${d.message}`);
     const shouldVerify = mode === "verify" || (mode === "run" && options.verifyBeforeRun === true);
     const shouldAnalyzeProofs = shouldVerify || mode === "semantics";
     const shouldShowRefinements = mode !== "parse" && mode !== "typecheck";
-    let proofSummary = shouldShowRefinements
+    const proofSummary = shouldShowRefinements
         ? frontend.refinements.map((refinement) => renderRefinementSummary(refinement))
         : [];
     let analysisSummary = [];
@@ -29,6 +47,7 @@ export function runOnSource(source, mode, options = {}) {
     let verification = null;
     let semanticsBackend = null;
     let compilerSemantics = null;
+    let sourceSemantics = null;
     if (shouldAnalyzeProofs) {
         verification = verifyProgram(frontend.program, frontend.typeMap, proofTimeoutMs === undefined ? {} : { proofTimeoutMs });
         const metrics = analyzeProgramMetrics(frontend.program);
@@ -48,7 +67,8 @@ export function runOnSource(source, mode, options = {}) {
         });
         implementationSummary = [...optimized.artifacts.implementations.entries()].map(([fnName, impl]) => `${fnName}: ${impl.tag}`);
         if (mode === "semantics") {
-            compilerSemantics = buildCompilerSemantics(ir, optimized, proofTimeoutMs === undefined ? {} : { timeoutMs: proofTimeoutMs });
+            sourceSemantics = traceTopLevelProgram(frontend.program, frontend.typeMap, options.cwd ?? process.cwd());
+            compilerSemantics = buildCompilerSemantics(ir, optimized, proofTimeoutMs === undefined ? {} : { timeoutMs: proofTimeoutMs }, { program: frontend.program, typeMap: frontend.typeMap });
             semanticsBackend = {
                 optimizeSummary: [...optimizeSummary],
                 implementationSummary: [...implementationSummary],
@@ -75,7 +95,7 @@ export function runOnSource(source, mode, options = {}) {
         }
     }
     if (mode === "semantics") {
-        semantics = renderSemanticsDebugData(buildSemanticsDebugData(frontend, verification ?? verifyProgram(frontend.program, frontend.typeMap, proofTimeoutMs === undefined ? {} : { proofTimeoutMs }), semanticsBackend, compilerSemantics));
+        semantics = renderSemanticsDebugData(buildSemanticsDebugData(frontend, verification ?? verifyProgram(frontend.program, frontend.typeMap, proofTimeoutMs === undefined ? {} : { proofTimeoutMs }), semanticsBackend, compilerSemantics, sourceSemantics));
     }
     if (!hasErrors && mode === "run") {
         const execution = executeTopLevelProgram(frontend.program, frontend.typeMap, options.cwd ?? process.cwd());
@@ -147,10 +167,12 @@ function resolveProofTimeoutMs(proofTimeoutMs) {
 }
 export function runOnFile(filepath, mode, options = {}) {
     const source = readFileSync(resolve(filepath), "utf8");
-    return runOnSource(source, mode, {
-        ...options,
-        cwd: options.cwd ?? dirname(resolve(filepath)),
-    });
+    return runOnSource(source, mode, mode === "check_semantics"
+        ? options
+        : {
+            ...options,
+            cwd: options.cwd ?? dirname(resolve(filepath)),
+        });
 }
 export function main(argv) {
     const args = [...argv];
@@ -171,7 +193,6 @@ export function main(argv) {
         if (arg === "--disable-pass") {
             const pass = args[i + 1];
             if (!pass || !isDisableablePassName(pass)) {
-                // eslint-disable-next-line no-console
                 console.error(`Unknown or missing pass after --disable-pass. Expected one of: ${DISABLEABLE_PASSES.join(", ")}`);
                 return 2;
             }
@@ -182,7 +203,6 @@ export function main(argv) {
         if (arg.startsWith("--disable-pass=")) {
             const pass = arg.slice("--disable-pass=".length);
             if (!isDisableablePassName(pass)) {
-                // eslint-disable-next-line no-console
                 console.error(`Unknown pass '${pass}'. Expected one of: ${DISABLEABLE_PASSES.join(", ")}`);
                 return 2;
             }
@@ -209,48 +229,40 @@ export function main(argv) {
                                 ? "run"
                                 : modeArg === "-m"
                                     ? "semantics"
-                                    : "verify";
+                                    : modeArg === "-c"
+                                        ? "check_semantics"
+                                        : "verify";
     const file = modeArg?.startsWith("-") ? fileArg : modeArg;
     if (!file) {
-        // eslint-disable-next-line no-console
-        console.error("Usage: jplmm [-p|-t|-v|-i|-s|-a|-r|-m] [--safe] [--disable-pass <name>] <file.jplmm>");
+        console.error("Usage: jplmm [-p|-t|-v|-i|-s|-a|-r|-m <file.jplmm> | -c <semantics.json>] [--safe] [--disable-pass <name>]");
         return 2;
     }
     const report = runOnFile(file, mode, { experimental, safe, disablePasses });
     for (const d of report.diagnostics) {
-        // eslint-disable-next-line no-console
         console.log(d);
     }
     for (const p of report.proofSummary) {
-        // eslint-disable-next-line no-console
         console.log(p);
     }
     for (const line of report.analysisSummary) {
-        // eslint-disable-next-line no-console
         console.log(line);
     }
     for (const p of report.optimizeSummary) {
-        // eslint-disable-next-line no-console
         console.log(p);
     }
     for (const impl of report.implementationSummary) {
-        // eslint-disable-next-line no-console
         console.log(impl);
     }
     if (report.semantics) {
-        // eslint-disable-next-line no-console
         console.log(report.semantics);
     }
     if (report.wat) {
-        // eslint-disable-next-line no-console
         console.log(report.wat);
     }
     if (report.nativeC) {
-        // eslint-disable-next-line no-console
         console.log(report.nativeC);
     }
     for (const line of report.output) {
-        // eslint-disable-next-line no-console
         console.log(line);
     }
     return report.ok ? 0 : 1;

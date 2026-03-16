@@ -280,29 +280,64 @@ describe("cli integration", () => {
 
     expect(r.ok).toBe(true);
     const data = JSON.parse(r.semantics ?? "{}");
+    expect(data.schemaVersion).toBe(1);
+    expect(data.source?.commands?.length).toBeGreaterThan(0);
+    expect(data.compiler?.schemaVersion).toBe(1);
+    expect(data.compiler?.floors?.typedAst?.label).toBe("typed_source_ast");
+    expect(data.compiler?.floors?.typedAst?.commands?.length).toBeGreaterThan(0);
     expect(data.compiler?.floors?.raw?.label).toBe("raw_ir");
     expect(data.compiler?.floors?.canonical?.label).toBe("canonical_ir");
     expect(data.compiler?.floors?.guardElided?.label).toBe("guard_elided_ir");
     expect(data.compiler?.floors?.finalOptimized?.label).toBe("final_optimized_ir");
+    expect(data.compiler?.floors?.typedAst?.functions?.[0]?.analysis?.exprSemantics?.length).toBeGreaterThan(0);
     expect(data.compiler?.floors?.raw?.functions[0]?.name).toBe("safe_div");
     expect(data.compiler?.analyses?.canonicalRanges?.cardinalities?.safe_div).toBeDefined();
+    expect(data.compiler?.analyses?.provenance?.astToRaw?.byOutputExprId).toBeDefined();
     expect(data.compiler?.analyses?.provenance?.rawToCanonical?.byOutputExprId).toBeDefined();
+    expect(data.compiler?.analyses?.canonicalRangeFacts?.length).toBeGreaterThanOrEqual(
+      data.compiler?.analyses?.canonicalConsumedRangeFacts?.length ?? 0,
+    );
+    expect(
+      Object.values(
+        data.compiler?.analyses?.provenance?.rawToCanonical?.byOutputExprId ?? {},
+      ).some((entry: { rule?: string | null }) => typeof entry.rule === "string" && entry.rule.length > 0),
+    ).toBe(true);
     expect(Object.keys(data.compiler?.analyses?.provenance?.canonicalToGuardElided?.byOutputExprId ?? {}).length).toBeGreaterThan(0);
-    expect(data.compiler?.edges?.[0]?.from).toBe("raw_ir");
-    expect(data.compiler?.edges?.[0]?.functions?.[0]?.status).toBe("equivalent");
-    expect(data.compiler?.edges?.[0]?.certificate?.kind).toBe("canonicalize");
+    expect(data.compiler?.edges?.[0]?.from).toBe("typed_source_ast");
+    expect(data.compiler?.edges?.[0]?.to).toBe("raw_ir");
+    expect(data.compiler?.edges?.[0]?.certificate?.kind).toBe("ast_lowering");
     expect(data.compiler?.edges?.[0]?.certificate?.validation?.ok).toBe(true);
-    expect(data.compiler?.edges?.[1]?.from).toBe("canonical_ir");
-    expect(data.compiler?.edges?.[1]?.to).toBe("canonical_range_facts");
-    expect(data.compiler?.edges?.[1]?.kind).toBe("analysis_soundness");
+    expect(data.compiler?.edges?.[1]?.from).toBe("raw_ir");
     expect(data.compiler?.edges?.[1]?.functions?.[0]?.status).toBe("equivalent");
-    expect(data.compiler?.edges?.[1]?.certificate?.kind).toBe("range_analysis");
+    expect(data.compiler?.edges?.[1]?.certificate?.kind).toBe("canonicalize");
     expect(data.compiler?.edges?.[1]?.certificate?.validation?.ok).toBe(true);
+    expect(data.compiler?.edges?.[2]?.from).toBe("canonical_ir");
+    expect(data.compiler?.edges?.[2]?.to).toBe("canonical_range_facts");
+    expect(data.compiler?.edges?.[2]?.kind).toBe("analysis_soundness");
+    expect(data.compiler?.edges?.[2]?.functions?.[0]?.status).toBe("equivalent");
+    expect(data.compiler?.edges?.[2]?.certificate?.kind).toBe("range_analysis");
+    expect(data.compiler?.edges?.[2]?.certificate?.validation?.ok).toBe(true);
     expect(data.compiler?.analyses?.guardConsumedExprIds?.length).toBeGreaterThan(0);
     expect(data.compiler?.analyses?.canonicalConsumedRangeFacts?.[0]?.owner).toBe("safe_div");
   });
 
-  it("proves consumed canonical range facts before guard elimination", () => {
+  it("can revalidate a dumped semantics bundle without recompiling source", () => {
+    const src = `
+      fn safe_div(x:int): int {
+        ret (x / 1) + 1;
+      }
+    `;
+    const semantics = runOnSource(src, "semantics");
+    expect(semantics.ok).toBe(true);
+
+    const checked = runOnSource(semantics.semantics ?? "", "check_semantics");
+    expect(checked.ok).toBe(true);
+    const report = JSON.parse(checked.semantics ?? "{}");
+    expect(report.ok).toBe(true);
+    expect(report.compiler?.edges?.[0]?.from).toBe("typed_source_ast");
+  });
+
+  it("proves full canonical range facts before guard elimination", () => {
     const src = `
       fn safe_root(x:float(0.0,_)): float {
         ret sqrt(x);

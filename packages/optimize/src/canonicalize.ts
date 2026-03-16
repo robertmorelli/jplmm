@@ -1,3 +1,4 @@
+import { NAN_GUARDED_BUILTINS } from "@jplmm/ast";
 import { isFloatType, isIntType } from "@jplmm/ir";
 import type { IRExpr, IRFunction, IRGlobalLet, IRProgram, IRStmt } from "@jplmm/ir";
 
@@ -35,8 +36,6 @@ const DEFAULT_STATS: CanonicalizeStats = {
   satNegInserted: 0,
   zeroDivisorConstantFolded: 0,
 };
-
-const NAN_GUARDED_BUILTINS = new Set(["sqrt", "log", "pow", "asin", "acos"]);
 
 export function canonicalizeProgram(program: IRProgram): CanonicalizeResult {
   const passOrder: CanonicalPass[] = ["total_arithmetic", "saturating_arithmetic"];

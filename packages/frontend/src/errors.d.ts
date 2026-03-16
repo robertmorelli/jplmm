@@ -12,4 +12,12 @@ export declare class FrontendError extends Error {
 }
 export declare function error(message: string, start: number, end: number, code?: string): Diagnostic;
 export declare function warning(message: string, start: number, end: number, code?: string): Diagnostic;
+export declare function nodeError(node: {
+    start?: number;
+    end?: number;
+} | null | undefined, message: string, code?: string): Diagnostic;
+export declare function nodeWarning(node: {
+    start?: number;
+    end?: number;
+} | null | undefined, message: string, code?: string): Diagnostic;
 //# sourceMappingURL=errors.d.ts.map

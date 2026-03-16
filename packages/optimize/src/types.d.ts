@@ -80,6 +80,7 @@ export type OptimizeCertificates = {
         stats: CanonicalizeResult["stats"];
     };
     rangeAnalysis: {
+        exprIds: number[];
         consumedExprIds: number[];
     };
     guardElimination: {
@@ -120,11 +121,20 @@ export type OptimizeStages = {
     finalRanges: RangeAnalysisResult;
 };
 export type ExprProvenance = {
-    byOutputExprId: Map<number, number[]>;
+    byOutputExprId: Map<number, {
+        sourceExprIds: number[];
+        status: "preserved" | "rewritten" | "generated";
+        rule: string | null;
+    }>;
 };
 export type SerializedExprProvenance = {
-    byOutputExprId: Record<string, number[]>;
+    byOutputExprId: Record<string, {
+        sourceExprIds: number[];
+        status: "preserved" | "rewritten" | "generated";
+        rule: string | null;
+    }>;
 };
+export type ProvenanceStage = "ast_lowering" | "canonicalize" | "guard_elimination" | "identity";
 export type OptimizeProvenance = {
     rawToCanonical: ExprProvenance;
     canonicalToGuardElided: ExprProvenance;

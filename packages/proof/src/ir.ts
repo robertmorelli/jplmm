@@ -1,4 +1,4 @@
-import { getArrayExtentNames, renderType as renderDeclaredType, type Param, type Program, type Type } from "@jplmm/ast";
+import { NAN_GUARDED_BUILTINS, getArrayExtentNames, renderType as renderDeclaredType, type Param, type Program, type Type } from "@jplmm/ast";
 import {
   buildIR,
   type IRExpr,
@@ -130,8 +130,6 @@ export type IrCallSummary = {
 export type AnalyzeIrOptions = {
   callSummaries?: Map<string, IrCallSummary>;
 };
-
-const NAN_GUARDED_BUILTINS = new Set(["sqrt", "log", "pow", "asin", "acos"]);
 
 export function buildCanonicalProgram(program: Program, typeMap: Map<number, Type>): IRProgram {
   return canonicalizeProgram(buildIR(program, typeMap)).program;

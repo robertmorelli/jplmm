@@ -7,10 +7,24 @@ import { buildIR } from "@jplmm/ir";
 import { optimizeProgram, type DisableablePassName, type FunctionImplementation } from "@jplmm/optimize";
 import { analyzeProgramMetrics, verifyProgram } from "@jplmm/verify";
 
-import { executeTopLevelProgram } from "./run";
-import { buildCompilerSemantics, buildSemanticsDebugData, renderSemanticsDebugData } from "./semantics";
+import { executeTopLevelProgram, traceTopLevelProgram } from "./run";
+import {
+  buildCompilerSemantics,
+  buildSemanticsDebugData,
+  checkSemanticsDebugDataBundle,
+  renderSemanticsDebugData,
+} from "./semantics";
 
-export type CliMode = "parse" | "typecheck" | "verify" | "optimize" | "wat" | "native" | "run" | "semantics";
+export type CliMode =
+  | "parse"
+  | "typecheck"
+  | "verify"
+  | "optimize"
+  | "wat"
+  | "native"
+  | "run"
+  | "semantics"
+  | "check_semantics";
 
 export type CliOptions = {
   experimental?: boolean;
@@ -39,6 +53,28 @@ export type CliReport = {
 const DEFAULT_CLI_PROOF_TIMEOUT_MS = 2000;
 
 export function runOnSource(source: string, mode: CliMode, options: CliOptions = {}): CliReport {
+  if (mode === "check_semantics") {
+    const timeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
+    const checked = checkSemanticsDebugDataBundle(
+      source,
+      timeoutMs === undefined ? {} : { timeoutMs },
+    );
+    return {
+      mode,
+      diagnostics: checked.ok ? [] : [`ERROR: ${checked.message}`],
+      proofSummary: [],
+      analysisSummary: [],
+      optimizeSummary: [],
+      implementationSummary: [],
+      semantics: `${JSON.stringify(checked, null, 2)}\n`,
+      wat: undefined,
+      nativeC: undefined,
+      output: [],
+      wroteFiles: [],
+      ok: checked.ok,
+    };
+  }
+
   const proofTimeoutMs = resolveProofTimeoutMs(options.proofTimeoutMs);
   const frontend = runFrontend(
     source,
@@ -63,6 +99,7 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
   let verification: ReturnType<typeof verifyProgram> | null = null;
   let semanticsBackend: Parameters<typeof buildSemanticsDebugData>[2] = null;
   let compilerSemantics: Parameters<typeof buildSemanticsDebugData>[3] = null;
+  let sourceSemantics: Parameters<typeof buildSemanticsDebugData>[4] = null;
 
   if (shouldAnalyzeProofs) {
     verification = verifyProgram(
@@ -95,10 +132,16 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
       ([fnName, impl]) => `${fnName}: ${impl.tag}`,
     );
     if (mode === "semantics") {
+      sourceSemantics = traceTopLevelProgram(
+        frontend.program,
+        frontend.typeMap,
+        options.cwd ?? process.cwd(),
+      );
       compilerSemantics = buildCompilerSemantics(
         ir,
         optimized,
         proofTimeoutMs === undefined ? {} : { timeoutMs: proofTimeoutMs },
+        { program: frontend.program, typeMap: frontend.typeMap },
       );
       semanticsBackend = {
         optimizeSummary: [...optimizeSummary],
@@ -143,6 +186,7 @@ export function runOnSource(source: string, mode: CliMode, options: CliOptions =
         ),
         semanticsBackend,
         compilerSemantics,
+        sourceSemantics,
       ),
     );
   }
@@ -234,10 +278,16 @@ function resolveProofTimeoutMs(proofTimeoutMs: number | undefined): number | und
 
 export function runOnFile(filepath: string, mode: CliMode, options: CliOptions = {}): CliReport {
   const source = readFileSync(resolve(filepath), "utf8");
-  return runOnSource(source, mode, {
-    ...options,
-    cwd: options.cwd ?? dirname(resolve(filepath)),
-  });
+  return runOnSource(
+    source,
+    mode,
+    mode === "check_semantics"
+      ? options
+      : {
+          ...options,
+          cwd: options.cwd ?? dirname(resolve(filepath)),
+        },
+  );
 }
 
 export function main(argv: string[]): number {
@@ -300,12 +350,14 @@ export function main(argv: string[]): number {
                   ? "run"
                   : modeArg === "-m"
                     ? "semantics"
-                : "verify";
+                    : modeArg === "-c"
+                      ? "check_semantics"
+                      : "verify";
   const file = modeArg?.startsWith("-") ? fileArg : modeArg;
 
   if (!file) {
      
-    console.error("Usage: jplmm [-p|-t|-v|-i|-s|-a|-r|-m] [--safe] [--disable-pass <name>] <file.jplmm>");
+    console.error("Usage: jplmm [-p|-t|-v|-i|-s|-a|-r|-m <file.jplmm> | -c <semantics.json>] [--safe] [--disable-pass <name>]");
     return 2;
   }
 

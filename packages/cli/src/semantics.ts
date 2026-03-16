@@ -1,25 +1,32 @@
 import type { WatModuleSemantics } from "@jplmm/backend";
 import type { FrontendResult, RefinementReport } from "@jplmm/frontend";
 import {
+  checkCompilerSemanticsRecord,
   serializeExprSemantics,
   serializeSymValue,
+  type CompilerSemanticsCheckRecord,
   type SemanticsCompilerRecord,
   type SerializedIrFunctionAnalysis,
   type SerializedSymValue,
 } from "@jplmm/proof";
+import type { Z3RunOptions } from "@jplmm/smt";
 import type { ProofResult, VerificationFunctionTrace, VerificationOutput } from "@jplmm/verify";
 import { analyzeProgramMetrics } from "@jplmm/verify";
 
 export { buildCompilerSemantics } from "@jplmm/proof";
 export type { SemanticsCompilerRecord } from "@jplmm/proof";
 
+export const SEMANTICS_DEBUG_SCHEMA_VERSION = 1;
+
 export type SemanticsDebugData = {
   kind: "jplmm_semantics_debug";
+  schemaVersion: typeof SEMANTICS_DEBUG_SCHEMA_VERSION;
   diagnostics: {
     frontend: FrontendResult["diagnostics"];
     verification: VerificationOutput["diagnostics"];
   };
   refinements: SemanticsRefinementRecord[];
+  source: SemanticsSourceRecord | null;
   canonicalProgram: VerificationOutput["canonicalProgram"] | null;
   compiler: SemanticsCompilerRecord | null;
   backend: SemanticsBackendRecord | null;
@@ -31,6 +38,27 @@ export type SemanticsBackendRecord = {
   implementationSummary: string[];
   optimizedProgram: VerificationOutput["canonicalProgram"];
   wasm: WatModuleSemantics;
+};
+
+export type SemanticsBundleCheckReport = {
+  ok: boolean;
+  compiler: CompilerSemanticsCheckRecord | null;
+  message: string;
+};
+
+export type SemanticsSourceRecord = {
+  usedImplicitMain: boolean;
+  implicitMainName: string | null;
+  commands: Array<{
+    id: number;
+    tag: string;
+    rendered: string;
+    effect: string;
+    outputDelta: string[];
+    wroteFilesDelta: string[];
+  }>;
+  finalOutput: string[];
+  wroteFiles: string[];
 };
 
 type SemanticsCompilerOrNull = SemanticsCompilerRecord | null;
@@ -75,15 +103,18 @@ export function buildSemanticsDebugData(
   verification: VerificationOutput,
   backend: SemanticsBackendRecord | null = null,
   compiler: SemanticsCompilerOrNull = null,
+  source: SemanticsSourceRecord | null = null,
 ): SemanticsDebugData {
   const metrics = analyzeProgramMetrics(frontend.program);
   return {
     kind: "jplmm_semantics_debug",
+    schemaVersion: SEMANTICS_DEBUG_SCHEMA_VERSION,
     diagnostics: {
       frontend: frontend.diagnostics,
       verification: verification.diagnostics,
     },
     refinements: frontend.refinements.map(serializeRefinement),
+    source,
     canonicalProgram: verification.canonicalProgram ?? null,
     compiler,
     backend,
@@ -102,6 +133,44 @@ export function buildSemanticsDebugData(
 
 export function renderSemanticsDebugData(data: SemanticsDebugData): string {
   return `${JSON.stringify(data, null, 2)}\n`;
+}
+
+export function checkSemanticsDebugDataBundle(
+  serialized: string,
+  solverOptions: Z3RunOptions = {},
+): SemanticsBundleCheckReport {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch (error) {
+    return {
+      ok: false,
+      compiler: null,
+      message: `invalid semantics JSON: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (!isSemanticsDebugData(parsed) || !parsed.compiler) {
+    return {
+      ok: false,
+      compiler: null,
+      message: "semantics bundle does not contain a compiler ladder record",
+    };
+  }
+  if (parsed.schemaVersion !== SEMANTICS_DEBUG_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      compiler: null,
+      message: `unsupported semantics bundle schema version ${String(parsed.schemaVersion)}`,
+    };
+  }
+  const compiler = checkCompilerSemanticsRecord(parsed.compiler, solverOptions);
+  return {
+    ok: compiler.ok,
+    compiler,
+    message: compiler.ok
+      ? "compiler ladder revalidated successfully"
+      : "compiler ladder revalidation found mismatches or unproven edges",
+  };
 }
 
 function serializeRefinement(refinement: RefinementReport): SemanticsRefinementRecord {
@@ -171,4 +240,11 @@ function serializeVerificationAnalysis(
       ]),
     ),
   };
+}
+
+function isSemanticsDebugData(value: unknown): value is SemanticsDebugData {
+  return typeof value === "object"
+    && value !== null
+    && (value as { kind?: unknown }).kind === "jplmm_semantics_debug"
+    && typeof (value as { schemaVersion?: unknown }).schemaVersion === "number";
 }

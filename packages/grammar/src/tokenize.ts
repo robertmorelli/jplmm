@@ -54,7 +54,7 @@ export function tokenize(source: string): Token[] {
 
   while (i < source.length) {
     const ch = at(i);
-    if (/\s/.test(ch)) {
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") {
       i += 1;
       continue;
     }

@@ -1,24 +1,23 @@
-import type { Type } from "@jplmm/ast";
-import type { IRExpr, IRFunction, IRProgram } from "@jplmm/ir";
 import {
+  renderType,
+  unwrapTimedDefinition,
+  type Cmd,
+  type Expr,
+  type Program,
+  type Stmt,
+  type Type,
+} from "@jplmm/ast";
+import { buildIR, type IRExpr, type IRFunction, type IRProgram } from "@jplmm/ir";
+import {
+  buildExprProvenance,
   executeProgram,
-  isNaNlessCanonical,
   matchClosedForms,
   serializeExprProvenance,
   type ClosedFormImplementation,
   type OptimizeResult,
-  type RangeAnalysisResult,
   type SerializedExprProvenance,
 } from "@jplmm/optimize";
-import {
-  INT32_MAX,
-  INT32_MIN,
-  buildJplScalarPrelude,
-  checkSat,
-  sanitizeSymbol as sanitize,
-  withHardTimeout,
-  type Z3RunOptions,
-} from "@jplmm/smt";
+import { type Z3RunOptions } from "@jplmm/smt";
 import {
   analyzeIrGlobals,
   analyzeIrFunction,
@@ -29,21 +28,28 @@ import {
 } from "./ir";
 import { checkIrFunctionRefinement } from "./refinement";
 import {
-  appendScalarTypeConstraints,
-  appendSmtEncodingState,
-  buildComparisonEnvFromParams,
-  canEncodeScalarExprWithSmt,
-  collectValueVars,
-  createSmtEncodingState,
-  emitScalarWithOverrides,
-  normalizeValueForComparison,
-  scalarExprType,
-  type ScalarExpr,
   type SymValue,
 } from "./scalar";
+import {
+  revalidateCertificate,
+  validateCanonicalizeCertificate,
+  validateClosedFormCertificate,
+  validateGuardEliminationCertificate,
+  validateIdentityCertificate,
+  validateLutCertificate,
+  validateRangeAnalysisCertificate,
+} from "./compiler_ladder_certificates";
+import {
+  buildCanonicalRangeSoundnessEdgeRecord,
+  deserializeRangeAnalysis,
+  serializeRangeAnalysis,
+  serializeRangeFacts,
+} from "./compiler_ladder_ranges";
 
 export type SemanticsCompilerRecord = {
+  schemaVersion: 1;
   floors: {
+    typedAst: SemanticsAstFloorRecord | null;
     raw: SemanticsIrFloorRecord;
     canonical: SemanticsIrFloorRecord;
     guardElided: SemanticsIrFloorRecord;
@@ -56,7 +62,14 @@ export type SemanticsCompilerRecord = {
   analyses: {
     canonicalRanges: SerializedRangeAnalysis;
     finalRanges: SerializedRangeAnalysis;
+    canonicalRangeFacts: Array<{
+      owner: string;
+      exprId: number;
+      rendered: string;
+      range: { lo: number; hi: number } | null;
+    }>;
     provenance: {
+      astToRaw: SerializedExprProvenance | null;
       rawToCanonical: SerializedExprProvenance;
       canonicalToGuardElided: SerializedExprProvenance;
       guardElidedToFinalOptimized: SerializedExprProvenance;
@@ -98,6 +111,42 @@ export type SemanticsIrFloorRecord = {
   }>;
 };
 
+export type SemanticsAstFloorRecord = {
+  label: "typed_source_ast";
+  program: Program;
+  typeMap: Record<string, Type>;
+  commands: Array<{
+    id: number;
+    tag: Cmd["tag"];
+    rendered: string;
+    semantics: string;
+    exprSemantics: Array<{
+      exprId: number;
+      rendered: string;
+      value: SerializedSymValue | null;
+      loweredExprId: number | null;
+    }>;
+  }>;
+  globals: Array<{
+    name: string;
+    rendered: string;
+    value: SerializedSymValue | null;
+    exprSemantics: Array<{
+      exprId: number;
+      rendered: string;
+      value: SerializedSymValue | null;
+      loweredExprId: number | null;
+    }>;
+  }>;
+  functions: Array<{
+    name: string;
+    keyword: string;
+    rendered: string[];
+    result: SerializedSymValue | null;
+    analysis: SerializedIrFunctionAnalysis;
+  }>;
+};
+
 export type SemanticsLutFloorRecord = {
   label: "lut_impl_semantics";
   functions: Array<{
@@ -111,8 +160,8 @@ export type SemanticsLutFloorRecord = {
 };
 
 export type SemanticsEdgeRecord = {
-  from: SemanticsIrFloorRecord["label"] | SemanticsLutFloorRecord["label"] | "canonical_range_facts";
-  to: SemanticsIrFloorRecord["label"] | SemanticsLutFloorRecord["label"] | "canonical_range_facts";
+  from: SemanticsAstFloorRecord["label"] | SemanticsIrFloorRecord["label"] | SemanticsLutFloorRecord["label"] | "canonical_range_facts";
+  to: SemanticsAstFloorRecord["label"] | SemanticsIrFloorRecord["label"] | SemanticsLutFloorRecord["label"] | "canonical_range_facts";
   kind: "ir_refinement" | "implementation_refinement" | "analysis_soundness";
   certificate: SemanticsCertificateRecord | null;
   ok: boolean;
@@ -137,6 +186,12 @@ type SemanticsCertificateValidation = {
 
 export type SemanticsCertificateRecord =
   | {
+      kind: "ast_lowering";
+      validation: SemanticsCertificateValidation & {
+        rebuiltMatchesRaw: boolean;
+      };
+    }
+  | {
       kind: "canonicalize";
       passOrder: OptimizeResult["stages"]["canonical"]["passOrder"];
       stats: OptimizeResult["stages"]["canonical"]["stats"];
@@ -156,6 +211,7 @@ export type SemanticsCertificateRecord =
     }
   | {
       kind: "range_analysis";
+      exprIds: number[];
       consumedExprIds: number[];
       validation: SemanticsCertificateValidation & {
         attachedExprIds: number[];
@@ -254,11 +310,28 @@ export type SerializedSymValue =
   | { kind: "void"; type: unknown }
   | { kind: "opaque"; type: unknown; label: string };
 
+export type CompilerAstSource = {
+  program: Program;
+  typeMap: Map<number, Type>;
+};
+
+export type CompilerSemanticsCheckRecord = {
+  ok: boolean;
+  summary: {
+    equivalent: number;
+    mismatch: number;
+    unproven: number;
+  };
+  edges: SemanticsEdgeRecord[];
+};
+
 export function buildCompilerSemantics(
   rawProgram: IRProgram,
   optimized: OptimizeResult,
   solverOptions: Z3RunOptions = {},
+  source: CompilerAstSource | null = null,
 ): SemanticsCompilerRecord {
+  const typedAst = source ? buildAstFloorRecord(source.program, source.typeMap, rawProgram) : null;
   const raw = buildIrFloorRecord("raw_ir", rawProgram, "raw_");
   const canonical = buildIrFloorRecord("canonical_ir", optimized.stages.canonical.program, "canonical_");
   const guardElided = buildIrFloorRecord("guard_elided_ir", optimized.stages.guardElided.program, "guard_");
@@ -292,7 +365,9 @@ export function buildCompilerSemantics(
   );
 
   return {
+    schemaVersion: 1,
     floors: {
+      typedAst,
       raw,
       canonical,
       guardElided,
@@ -305,13 +380,21 @@ export function buildCompilerSemantics(
     analyses: {
       canonicalRanges: serializeRangeAnalysis(optimized.stages.canonicalRanges),
       finalRanges: serializeRangeAnalysis(optimized.stages.finalRanges),
+      canonicalRangeFacts: serializeRangeFacts(
+        optimized.stages.canonical.program,
+        optimized.stages.canonicalRanges,
+        optimized.certificates.rangeAnalysis.exprIds,
+      ),
       provenance: {
+        astToRaw: source
+          ? serializeExprProvenance(buildExprProvenance(buildIR(source.program, source.typeMap), rawProgram, "ast_lowering"))
+          : null,
         rawToCanonical: serializeExprProvenance(optimized.provenance.rawToCanonical),
         canonicalToGuardElided: serializeExprProvenance(optimized.provenance.canonicalToGuardElided),
         guardElidedToFinalOptimized: serializeExprProvenance(optimized.provenance.guardElidedToFinalOptimized),
       },
       guardConsumedExprIds: [...optimized.stages.guardElided.usedRangeExprIds],
-      canonicalConsumedRangeFacts: serializeConsumedRangeFacts(
+      canonicalConsumedRangeFacts: serializeRangeFacts(
         optimized.stages.canonical.program,
         optimized.stages.canonicalRanges,
         optimized.stages.guardElided.usedRangeExprIds,
@@ -323,6 +406,9 @@ export function buildCompilerSemantics(
       reports: optimized.reports,
     },
     edges: [
+      ...(typedAst
+        ? [buildAstToRawEdgeRecord(typedAst, rawProgram)]
+        : []),
       buildIrEdgeRecord(
         "raw_ir",
         "canonical_ir",
@@ -335,7 +421,7 @@ export function buildCompilerSemantics(
       buildCanonicalRangeSoundnessEdgeRecord(
         optimized.stages.canonical.program,
         optimized.stages.canonicalRanges,
-        optimized.stages.guardElided.usedRangeExprIds,
+        optimized.certificates.rangeAnalysis.exprIds,
         solverOptions,
         rangeCertificate,
       ),
@@ -373,24 +459,103 @@ export function buildCompilerSemantics(
   };
 }
 
-export function serializeRangeAnalysis(result: RangeAnalysisResult): SerializedRangeAnalysis {
+export function checkCompilerSemanticsRecord(
+  record: SemanticsCompilerRecord,
+  solverOptions: Z3RunOptions = {},
+): CompilerSemanticsCheckRecord {
+  if (record.schemaVersion !== 1) {
+    return {
+      ok: false,
+      summary: {
+        equivalent: 0,
+        mismatch: 0,
+        unproven: 0,
+      },
+      edges: [],
+    };
+  }
+  const implementations = new Map(record.analyses.implementations.map((entry) => [entry.fnName, entry.implementation] as const));
+  const closedFormOverrides = buildClosedFormEdgeOverrides(record.floors.finalOptimized.program, implementations);
+  const edges: SemanticsEdgeRecord[] = [];
+
+  if (record.floors.typedAst) {
+    edges.push(buildAstToRawEdgeRecord(record.floors.typedAst, record.floors.raw.program));
+  }
+
+  edges.push(buildIrEdgeRecord(
+    "raw_ir",
+    "canonical_ir",
+    record.floors.raw.program,
+    record.floors.canonical.program,
+    solverOptions,
+    new Map(),
+    revalidateCertificate(record.edges, "raw_ir", "canonical_ir", record.floors.raw.program, record.floors.canonical.program),
+  ));
+
+  edges.push(buildCanonicalRangeSoundnessEdgeRecord(
+    record.floors.canonical.program,
+    deserializeRangeAnalysis(record.analyses.canonicalRanges),
+    Object.keys(record.analyses.canonicalRanges.exprRanges).map(Number),
+    solverOptions,
+    revalidateCertificate(record.edges, "canonical_ir", "canonical_range_facts", record.floors.canonical.program, null, record.analyses.canonicalRanges),
+  ));
+
+  edges.push(buildIrEdgeRecord(
+    "canonical_ir",
+    "guard_elided_ir",
+    record.floors.canonical.program,
+    record.floors.guardElided.program,
+    solverOptions,
+    new Map(),
+    revalidateCertificate(record.edges, "canonical_ir", "guard_elided_ir", record.floors.canonical.program, record.floors.guardElided.program),
+  ));
+
+  edges.push(buildIrEdgeRecord(
+    "guard_elided_ir",
+    "final_optimized_ir",
+    record.floors.guardElided.program,
+    record.floors.finalOptimized.program,
+    solverOptions,
+    new Map(),
+    revalidateCertificate(record.edges, "guard_elided_ir", "final_optimized_ir", record.floors.guardElided.program, record.floors.finalOptimized.program),
+  ));
+
+  if (record.floors.closedFormImpl) {
+    edges.push(buildIrEdgeRecord(
+      "final_optimized_ir",
+      "closed_form_impl_ir",
+      record.floors.finalOptimized.program,
+      record.floors.closedFormImpl.program,
+      solverOptions,
+      closedFormOverrides,
+      revalidateCertificate(record.edges, "final_optimized_ir", "closed_form_impl_ir", record.floors.finalOptimized.program, record.floors.closedFormImpl.program),
+    ));
+  }
+
+  if (record.implementationFloors.lut) {
+    const lutEdge = buildLutImplementationEdgeRecord(
+      record.floors.finalOptimized.program,
+      implementations,
+      revalidateCertificate(record.edges, "final_optimized_ir", "lut_impl_semantics", record.floors.finalOptimized.program, null),
+    );
+    if (lutEdge) {
+      edges.push(lutEdge);
+    }
+  }
+
+  const summary = edges.reduce(
+    (current, edge) => ({
+      equivalent: current.equivalent + edge.summary.equivalent,
+      mismatch: current.mismatch + edge.summary.mismatch,
+      unproven: current.unproven + edge.summary.unproven,
+    }),
+    { equivalent: 0, mismatch: 0, unproven: 0 },
+  );
+
   return {
-    exprRanges: Object.fromEntries(
-      [...result.rangeMap.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([id, range]) => [String(id), range]),
-    ),
-    cardinalities: Object.fromEntries(
-      [...result.cardinalityMap.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([fnName, info]) => [
-          fnName,
-          {
-            parameterRanges: info.parameterRanges,
-            cardinality: info.cardinality,
-          },
-        ]),
-    ),
+    ok: edges.every((edge) => edge.ok),
+    summary,
+    edges,
   };
 }
 
@@ -522,6 +687,270 @@ export function serializeExprSemantics(
   }));
 }
 
+function serializeAstFunctionAnalysis(
+  body: Stmt[],
+  trace:
+    | {
+        hasRec: boolean;
+        paramValues: Map<string, SymValue>;
+        exprSemantics: Map<number, SymValue>;
+        result: SymValue | null;
+        stmtSemantics: Array<{
+          stmtIndex: number;
+          stmtTag: string;
+          rendered: string;
+          value: SymValue | null;
+        }>;
+        radSites: Array<{
+          stmtIndex: number;
+          rendered: string;
+          source: unknown;
+        }>;
+        recSites: Array<{
+          stmtIndex: number;
+          args: unknown[];
+          argValues: Map<number, SymValue>;
+          issues: string[];
+        }>;
+        callSigs: Map<string, { args: string[]; ret: string } | { args: Array<"int" | "float">; ret: "int" | "float" }>;
+      }
+    | null,
+): SerializedIrFunctionAnalysis {
+  const base = serializePlainIrAnalysis(trace, []);
+  return {
+    ...base,
+    exprSemantics: serializeAstExprSemantics(
+      body.filter((stmt) => stmt.tag !== "gas").map((stmt) => stmt.expr),
+      trace?.exprSemantics ?? new Map(),
+    ),
+    statementSemantics: (trace?.stmtSemantics ?? []).map((entry) => ({
+      stmtIndex: entry.stmtIndex,
+      stmtTag: entry.stmtTag,
+      rendered: renderAstStmt(body[entry.stmtIndex] ?? null),
+      value: entry.value ? serializeSymValue(entry.value) : null,
+    })),
+  };
+}
+
+function serializeAstExprSemantics(
+  roots: Expr[],
+  exprSemantics: Map<number, SymValue>,
+): Array<{
+  exprId: number;
+  rendered: string;
+  value: SerializedSymValue | null;
+  loweredExprId: number | null;
+}> {
+  const orderedExprs = new Map<number, Expr>();
+  for (const root of roots) {
+    collectAstExprNodes(root, orderedExprs);
+  }
+  return [...orderedExprs.values()].map((expr) => ({
+    exprId: expr.id,
+    rendered: renderAstExpr(expr),
+    value: serializeOptionalSymValue(exprSemantics.get(expr.id)),
+    loweredExprId: exprSemantics.has(expr.id) ? expr.id : null,
+  }));
+}
+
+function serializeTypeMap(typeMap: Map<number, Type>): Record<string, Type> {
+  return Object.fromEntries(
+    [...typeMap.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([id, type]) => [String(id), type]),
+  );
+}
+
+function deserializeTypeMap(typeMap: Record<string, Type>): Map<number, Type> {
+  return new Map(
+    Object.entries(typeMap)
+      .map(([id, type]) => [Number(id), type] as const)
+      .sort(([left], [right]) => left - right),
+  );
+}
+
+function renderAstFunction(fn: Extract<Cmd, { tag: "fn_def" }>): string[] {
+  const params = fn.params.map((param) => `${param.name}:${renderType(param.type)}`).join(", ");
+  return [
+    `${fn.keyword} ${fn.name}(${params}): ${renderType(fn.retType)} {`,
+    ...fn.body.map((stmt) => `  ${renderAstStmt(stmt)}`),
+    "}",
+  ];
+}
+
+function renderAstCmd(cmd: Cmd): string {
+  switch (cmd.tag) {
+    case "fn_def":
+      return renderAstFunction(cmd).join("\n");
+    case "let_cmd":
+      return `let ${renderAstLValue(cmd.lvalue)} = ${renderAstExpr(cmd.expr)}`;
+    case "struct_def":
+      return `struct ${cmd.name} { ${cmd.fields.map((field) => `${field.name}:${renderType(field.type)}`).join(", ")} }`;
+    case "read_image":
+      return `read image "${cmd.filename}" -> ${renderAstArgument(cmd.target)}`;
+    case "write_image":
+      return `write image ${renderAstExpr(cmd.expr)} -> "${cmd.filename}"`;
+    case "print":
+      return `print "${cmd.message}"`;
+    case "show":
+      return `show ${renderAstExpr(cmd.expr)}`;
+    case "time":
+      return `time ${renderAstCmd(cmd.cmd)}`;
+    default: {
+      const _never: never = cmd;
+      return _never;
+    }
+  }
+}
+
+function renderAstStmt(stmt: Stmt | null): string {
+  if (!stmt) {
+    return "<missing stmt>";
+  }
+  switch (stmt.tag) {
+    case "let":
+      return `let ${renderAstLValue(stmt.lvalue)} = ${renderAstExpr(stmt.expr)}`;
+    case "ret":
+      return `ret ${renderAstExpr(stmt.expr)}`;
+    case "rad":
+      return `rad ${renderAstExpr(stmt.expr)}`;
+    case "gas":
+      return `gas ${stmt.limit}`;
+    default: {
+      const _never: never = stmt;
+      return _never;
+    }
+  }
+}
+
+function renderAstExpr(expr: Expr): string {
+  switch (expr.tag) {
+    case "int_lit":
+    case "float_lit":
+      return String(expr.value);
+    case "void_lit":
+      return "void";
+    case "var":
+      return expr.name;
+    case "binop":
+      return `${renderAstExpr(expr.left)} ${expr.op} ${renderAstExpr(expr.right)}`;
+    case "unop":
+      return `${expr.op}${renderAstExpr(expr.operand)}`;
+    case "call":
+      return `${expr.name}(${expr.args.map((arg) => renderAstExpr(arg)).join(", ")})`;
+    case "index":
+      return `${renderAstExpr(expr.array)}[${expr.indices.map((index) => renderAstExpr(index)).join(", ")}]`;
+    case "field":
+      return `${renderAstExpr(expr.target)}.${expr.field}`;
+    case "struct_cons":
+      return `${expr.name}(${expr.fields.map((field) => renderAstExpr(field)).join(", ")})`;
+    case "array_cons":
+      return `[${expr.elements.map((element) => renderAstExpr(element)).join(", ")}]`;
+    case "array_expr":
+      return `array[${expr.bindings.map((binding) => `${binding.name}:${renderAstExpr(binding.expr)}`).join(", ")}] ${renderAstExpr(expr.body)}`;
+    case "sum_expr":
+      return `sum[${expr.bindings.map((binding) => `${binding.name}:${renderAstExpr(binding.expr)}`).join(", ")}] ${renderAstExpr(expr.body)}`;
+    case "res":
+      return "res";
+    case "rec":
+      return `rec(${expr.args.map((arg) => renderAstExpr(arg)).join(", ")})`;
+    default: {
+      const _never: never = expr;
+      return _never;
+    }
+  }
+}
+
+function renderAstLValue(lvalue: Extract<Stmt, { tag: "let" }>["lvalue"] | Extract<Cmd, { tag: "let_cmd" }>["lvalue"]): string {
+  switch (lvalue.tag) {
+    case "var":
+      return lvalue.name;
+    case "field":
+      return `${lvalue.base}.${lvalue.field}`;
+    case "tuple":
+      return `(${lvalue.items.map((item) => renderAstLValue(item)).join(", ")})`;
+    default: {
+      const _never: never = lvalue;
+      return _never;
+    }
+  }
+}
+
+function renderAstArgument(argument: Extract<Cmd, { tag: "read_image" }>["target"]): string {
+  switch (argument.tag) {
+    case "var":
+      return argument.name;
+    case "tuple":
+      return `(${argument.items.map((item) => renderAstArgument(item)).join(", ")})`;
+    default: {
+      const _never: never = argument;
+      return _never;
+    }
+  }
+}
+
+function collectAstExprNodes(expr: Expr, out: Map<number, Expr>): void {
+  if (out.has(expr.id)) {
+    return;
+  }
+  out.set(expr.id, expr);
+  switch (expr.tag) {
+    case "int_lit":
+    case "float_lit":
+    case "void_lit":
+    case "var":
+    case "res":
+      return;
+    case "unop":
+      collectAstExprNodes(expr.operand, out);
+      return;
+    case "binop":
+      collectAstExprNodes(expr.left, out);
+      collectAstExprNodes(expr.right, out);
+      return;
+    case "call":
+      for (const arg of expr.args) {
+        collectAstExprNodes(arg, out);
+      }
+      return;
+    case "index":
+      collectAstExprNodes(expr.array, out);
+      for (const index of expr.indices) {
+        collectAstExprNodes(index, out);
+      }
+      return;
+    case "field":
+      collectAstExprNodes(expr.target, out);
+      return;
+    case "struct_cons":
+      for (const field of expr.fields) {
+        collectAstExprNodes(field, out);
+      }
+      return;
+    case "array_cons":
+      for (const element of expr.elements) {
+        collectAstExprNodes(element, out);
+      }
+      return;
+    case "array_expr":
+    case "sum_expr":
+      for (const binding of expr.bindings) {
+        collectAstExprNodes(binding.expr, out);
+      }
+      collectAstExprNodes(expr.body, out);
+      return;
+    case "rec":
+      for (const arg of expr.args) {
+        collectAstExprNodes(arg, out);
+      }
+      return;
+    default: {
+      const _never: never = expr;
+      return _never;
+    }
+  }
+}
+
 function buildIrFloorRecord(
   label: SemanticsIrFloorRecord["label"],
   program: IRProgram,
@@ -554,6 +983,170 @@ function buildIrFloorRecord(
         ),
       };
     }),
+  };
+}
+
+function buildAstFloorRecord(
+  program: Program,
+  typeMap: Map<number, Type>,
+  rawProgram: IRProgram,
+): SemanticsAstFloorRecord {
+  const structDefs = new Map(rawProgram.structs.map((struct) => [struct.name, struct.fields] as const));
+  const callSummaries = buildIrCallSummaries(rawProgram, structDefs, "ast_call_");
+  const globalAnalysis = analyzeIrGlobals(rawProgram, structDefs, "ast_globals_", { callSummaries });
+  const rawFunctionsByName = new Map(rawProgram.functions.map((fn) => [fn.name, fn] as const));
+  const rawGlobalsByName = new Map(rawProgram.globals.map((global) => [global.name, global] as const));
+
+  return {
+    label: "typed_source_ast",
+    program,
+    typeMap: serializeTypeMap(typeMap),
+    commands: program.commands.map((cmd) => ({
+      id: cmd.id,
+      tag: cmd.tag,
+      rendered: renderAstCmd(cmd),
+      semantics: describeAstCmdSemantics(cmd),
+      exprSemantics: serializeAstCmdExprSemantics(cmd, globalAnalysis.exprSemantics),
+    })),
+    globals: program.commands.flatMap((cmd) => {
+      if (cmd.tag !== "let_cmd" || cmd.lvalue.tag !== "var") {
+        return [];
+      }
+      const rawGlobal = rawGlobalsByName.get(cmd.lvalue.name);
+      return [{
+        name: cmd.lvalue.name,
+        rendered: renderAstCmd(cmd),
+        value: rawGlobal ? serializeOptionalSymValue(globalAnalysis.values.get(rawGlobal.name)) : null,
+        exprSemantics: serializeAstExprSemantics([cmd.expr], globalAnalysis.exprSemantics),
+      }];
+    }),
+    functions: program.commands
+      .map((cmd) => unwrapTimedDefinition(cmd, "fn_def"))
+      .filter((fn): fn is Exclude<typeof fn, null> => fn !== null)
+      .map((fn) => {
+        const rawFn = rawFunctionsByName.get(fn.name);
+        const analysis = rawFn
+          ? analyzeIrFunction(rawFn, structDefs, `ast_${fn.name}_`, { callSummaries })
+          : null;
+        return {
+          name: fn.name,
+          keyword: fn.keyword,
+          rendered: renderAstFunction(fn),
+          result: analysis?.result ? serializeSymValue(analysis.result) : null,
+          analysis: serializeAstFunctionAnalysis(
+            fn.body,
+            analysis ? { ...analysis, hasRec: hasRec(rawFn!) } : null,
+          ),
+        };
+      }),
+  };
+}
+
+function describeAstCmdSemantics(cmd: Cmd): string {
+  switch (cmd.tag) {
+    case "fn_def":
+      return "declares a typed function definition that lowers into raw IR";
+    case "struct_def":
+      return "declares a typed struct shape for field projection and construction";
+    case "let_cmd":
+      return "evaluates a top-level expression and binds its normalized runtime value";
+    case "read_image":
+      return "loads an image file and binds its dimensions and/or pixel array";
+    case "write_image":
+      return "evaluates an expression and writes an image file";
+    case "print":
+      return "emits a literal string at top level";
+    case "show":
+      return "evaluates an expression and emits its formatted value at top level";
+    case "time":
+      return "executes the nested command and emits an elapsed-time report";
+    default: {
+      const _never: never = cmd;
+      return `${_never}`;
+    }
+  }
+}
+
+function serializeAstCmdExprSemantics(
+  cmd: Cmd,
+  exprSemantics: Map<number, SymValue>,
+): Array<{
+  exprId: number;
+  rendered: string;
+  value: SerializedSymValue | null;
+  loweredExprId: number | null;
+}> {
+  switch (cmd.tag) {
+    case "let_cmd":
+    case "show":
+    case "write_image":
+      return serializeAstExprSemantics([cmd.expr], exprSemantics);
+    case "time":
+      return serializeAstCmdExprSemantics(cmd.cmd, exprSemantics);
+    default:
+      return [];
+  }
+}
+
+function buildAstToRawEdgeRecord(
+  ast: SemanticsAstFloorRecord,
+  rawProgram: IRProgram,
+): SemanticsEdgeRecord {
+  const rebuilt = buildIR(ast.program, deserializeTypeMap(ast.typeMap));
+  const rebuiltMatchesRaw = JSON.stringify(rebuilt) === JSON.stringify(rawProgram);
+  const names = [...new Set([
+    ...rawProgram.functions.map((fn) => fn.name),
+    ...rebuilt.functions.map((fn) => fn.name),
+  ])].sort((left, right) => left.localeCompare(right));
+  const globals = [...new Set([
+    ...rawProgram.globals.map((global) => global.name),
+    ...rebuilt.globals.map((global) => global.name),
+  ])].sort((left, right) => left.localeCompare(right));
+  const functions: SemanticsEdgeRecord["functions"] = [
+    ...names.map((name) => ({
+      name,
+      status: rebuiltMatchesRaw ? "equivalent" as const : "mismatch" as const,
+      ...(rebuiltMatchesRaw ? { method: "ast_lowering_identity" } : {}),
+      detail: rebuiltMatchesRaw
+        ? "typed AST lowering rebuilds the same raw IR function"
+        : "rebuilding raw IR from the typed AST did not reproduce the stored raw IR function floor",
+    })),
+    ...globals.map((name) => ({
+      name: `<global:${name}>`,
+      status: rebuiltMatchesRaw ? "equivalent" as const : "mismatch" as const,
+      ...(rebuiltMatchesRaw ? { method: "ast_lowering_identity" } : {}),
+      detail: rebuiltMatchesRaw
+        ? "typed AST lowering rebuilds the same raw IR global"
+        : "rebuilding raw IR from the typed AST did not reproduce the stored raw IR global floor",
+    })),
+  ];
+
+  const summary = functions.reduce(
+    (current, fn) => ({
+      equivalent: current.equivalent + (fn.status === "equivalent" ? 1 : 0),
+      mismatch: current.mismatch + (fn.status === "mismatch" ? 1 : 0),
+      unproven: current.unproven,
+    }),
+    { equivalent: 0, mismatch: 0, unproven: 0 },
+  );
+
+  return {
+    from: "typed_source_ast",
+    to: "raw_ir",
+    kind: "ir_refinement",
+    certificate: {
+      kind: "ast_lowering",
+      validation: {
+        ok: rebuiltMatchesRaw,
+        detail: rebuiltMatchesRaw
+          ? "rebuilding raw IR from the typed AST reproduces the stored raw floor"
+          : "rebuilding raw IR from the typed AST does not reproduce the stored raw floor",
+        rebuiltMatchesRaw,
+      },
+    },
+    ok: rebuiltMatchesRaw,
+    summary,
+    functions,
   };
 }
 
@@ -623,557 +1216,6 @@ function buildIrEdgeRecord(
   };
 }
 
-type IrOpCounts = {
-  totalDiv: number;
-  totalMod: number;
-  nanToZero: number;
-  satAdd: number;
-  satSub: number;
-  satMul: number;
-  satNeg: number;
-  zeroDivisorBinops: number;
-};
-
-function validateCanonicalizeCertificate(
-  rawProgram: IRProgram,
-  canonicalProgram: IRProgram,
-  certificate: OptimizeResult["certificates"]["canonicalize"],
-): SemanticsCertificateRecord {
-  const rawCounts = countProgramOps(rawProgram);
-  const canonicalCounts = countProgramOps(canonicalProgram);
-  const derived = {
-    totalDivInserted: canonicalCounts.totalDiv - rawCounts.totalDiv,
-    totalModInserted: canonicalCounts.totalMod - rawCounts.totalMod,
-    nanToZeroInserted: canonicalCounts.nanToZero - rawCounts.nanToZero,
-    satAddInserted: canonicalCounts.satAdd - rawCounts.satAdd,
-    satSubInserted: canonicalCounts.satSub - rawCounts.satSub,
-    satMulInserted: canonicalCounts.satMul - rawCounts.satMul,
-    satNegInserted: canonicalCounts.satNeg - rawCounts.satNeg,
-    zeroDivisorConstantFolded: rawCounts.zeroDivisorBinops,
-  };
-  const stats = certificate.stats;
-  const targetCanonical = isNaNlessCanonical(canonicalProgram);
-  const statsMatch =
-    derived.totalDivInserted === stats.totalDivInserted &&
-    derived.totalModInserted === stats.totalModInserted &&
-    derived.nanToZeroInserted === stats.nanToZeroInserted &&
-    derived.satAddInserted === stats.satAddInserted &&
-    derived.satSubInserted === stats.satSubInserted &&
-    derived.satMulInserted === stats.satMulInserted &&
-    derived.satNegInserted === stats.satNegInserted &&
-    derived.zeroDivisorConstantFolded === stats.zeroDivisorConstantFolded;
-  return {
-    kind: "canonicalize",
-    passOrder: certificate.passOrder,
-    stats,
-    validation: {
-      ok: targetCanonical && statsMatch,
-      detail: targetCanonical && statsMatch
-        ? "target program satisfies canonical total/saturating form and derived rewrite counts match the emitted stats"
-        : !targetCanonical
-          ? "target program is not in the expected canonical total/saturating form"
-          : "derived rewrite counts do not match the emitted canonicalization stats",
-      derived,
-      targetCanonical,
-    },
-  };
-}
-
-function validateRangeAnalysisCertificate(
-  program: IRProgram,
-  certificate: OptimizeResult["certificates"]["rangeAnalysis"],
-): SemanticsCertificateRecord {
-  const attachedExprIds = [...collectProgramExprRenderings(program).keys()].sort((left, right) => left - right);
-  const attached = new Set(attachedExprIds);
-  const uniqueConsumed = [...new Set(certificate.consumedExprIds)].sort((left, right) => left - right);
-  const missingExprIds = uniqueConsumed.filter((exprId) => !attached.has(exprId));
-  return {
-    kind: "range_analysis",
-    consumedExprIds: uniqueConsumed,
-    validation: {
-      ok: missingExprIds.length === 0,
-      detail: missingExprIds.length === 0
-        ? "all downstream-consumed range facts are attached to canonical IR expressions"
-        : `some downstream-consumed range facts are not attached to canonical IR expressions: ${missingExprIds.join(", ")}`,
-      attachedExprIds,
-      missingExprIds,
-    },
-  };
-}
-
-function validateGuardEliminationCertificate(
-  canonicalProgram: IRProgram,
-  guardProgram: IRProgram,
-  certificate: OptimizeResult["certificates"]["guardElimination"],
-): SemanticsCertificateRecord {
-  const canonicalCounts = countProgramOps(canonicalProgram);
-  const guardCounts = countProgramOps(guardProgram);
-  const derivedRemoved = {
-    nanToZero: canonicalCounts.nanToZero - guardCounts.nanToZero,
-    totalDiv: canonicalCounts.totalDiv - guardCounts.totalDiv,
-    totalMod: canonicalCounts.totalMod - guardCounts.totalMod,
-  };
-  const attached = new Set(collectProgramExprRenderings(canonicalProgram).keys());
-  const usedRangeExprIds = [...new Set(certificate.usedRangeExprIds)].sort((left, right) => left - right);
-  const missingExprIds = usedRangeExprIds.filter((exprId) => !attached.has(exprId));
-  const removedMatch =
-    derivedRemoved.nanToZero === certificate.removed.nanToZero &&
-    derivedRemoved.totalDiv === certificate.removed.totalDiv &&
-    derivedRemoved.totalMod === certificate.removed.totalMod;
-  return {
-    kind: "guard_elimination",
-    usedRangeExprIds,
-    removed: certificate.removed,
-    validation: {
-      ok: removedMatch && missingExprIds.length === 0,
-      detail: removedMatch && missingExprIds.length === 0
-        ? "guard-elimination counts match the structural diff and every consumed range fact is attached to canonical IR"
-        : !removedMatch
-          ? "guard-elimination removal counts do not match the structural diff between canonical_ir and guard_elided_ir"
-          : `guard-elimination consumed unattached range facts: ${missingExprIds.join(", ")}`,
-      derivedRemoved,
-      missingExprIds,
-    },
-  };
-}
-
-function validateIdentityCertificate(certificate: OptimizeResult["certificates"]["finalIdentity"]): SemanticsCertificateRecord {
-  return {
-    kind: "identity",
-    reason: certificate.reason,
-    validation: {
-      ok: true,
-      detail: certificate.reason,
-    },
-  };
-}
-
-function validateClosedFormCertificate(
-  program: IRProgram,
-  certificate: OptimizeResult["certificates"]["closedForm"],
-): SemanticsCertificateRecord {
-  const rediscovered = new Map(matchClosedForms(program).map((match) => [match.fnName, match.implementation] as const));
-  const unmatched = certificate.matches
-    .filter((match) => JSON.stringify(rediscovered.get(match.fnName) ?? null) !== JSON.stringify(match.implementation))
-    .map((match) => match.fnName);
-  return {
-    kind: "closed_form",
-    matches: certificate.matches,
-    validation: {
-      ok: unmatched.length === 0,
-      detail: unmatched.length === 0
-        ? "every emitted closed-form implementation is rediscovered by the local matcher"
-        : `closed-form implementations could not be rediscovered for: ${unmatched.join(", ")}`,
-      unmatched,
-    },
-  };
-}
-
-function validateLutCertificate(certificate: OptimizeResult["certificates"]["lut"]): SemanticsCertificateRecord {
-  const invalidEntries = certificate.entries
-    .filter((entry) => entry.tableLength !== lutCardinality(entry.parameterRanges))
-    .map((entry) => entry.fnName);
-  return {
-    kind: "lut",
-    entries: certificate.entries,
-    validation: {
-      ok: invalidEntries.length === 0,
-      detail: invalidEntries.length === 0
-        ? "every LUT table length matches the cartesian product of its finite integer ranges"
-        : `LUT table lengths do not match their declared domains for: ${invalidEntries.join(", ")}`,
-      invalidEntries,
-    },
-  };
-}
-
-function lutCardinality(ranges: Array<{ lo: number; hi: number }>): number {
-  return ranges.reduce((product, range) => product * (range.hi - range.lo + 1), 1);
-}
-
-function countProgramOps(program: IRProgram): IrOpCounts {
-  const counts: IrOpCounts = {
-    totalDiv: 0,
-    totalMod: 0,
-    nanToZero: 0,
-    satAdd: 0,
-    satSub: 0,
-    satMul: 0,
-    satNeg: 0,
-    zeroDivisorBinops: 0,
-  };
-  for (const global of program.globals) {
-    countExprOps(global.expr, counts);
-  }
-  for (const fn of program.functions) {
-    for (const stmt of fn.body) {
-      if (stmt.tag !== "gas") {
-        countExprOps(stmt.expr, counts);
-      }
-    }
-  }
-  return counts;
-}
-
-function countExprOps(expr: IRExpr, counts: IrOpCounts): void {
-  switch (expr.tag) {
-    case "int_lit":
-    case "float_lit":
-    case "void_lit":
-    case "var":
-    case "res":
-      return;
-    case "unop":
-      countExprOps(expr.operand, counts);
-      return;
-    case "binop":
-      if ((expr.op === "/" || expr.op === "%") && isZeroLiteralExpr(expr.right)) {
-        counts.zeroDivisorBinops += 1;
-      }
-      countExprOps(expr.left, counts);
-      countExprOps(expr.right, counts);
-      return;
-    case "call":
-      for (const arg of expr.args) {
-        countExprOps(arg, counts);
-      }
-      return;
-    case "index":
-      countExprOps(expr.array, counts);
-      for (const index of expr.indices) {
-        countExprOps(index, counts);
-      }
-      return;
-    case "field":
-      countExprOps(expr.target, counts);
-      return;
-    case "struct_cons":
-      for (const field of expr.fields) {
-        countExprOps(field, counts);
-      }
-      return;
-    case "array_cons":
-      for (const element of expr.elements) {
-        countExprOps(element, counts);
-      }
-      return;
-    case "array_expr":
-    case "sum_expr":
-      for (const binding of expr.bindings) {
-        countExprOps(binding.expr, counts);
-      }
-      countExprOps(expr.body, counts);
-      return;
-    case "rec":
-      for (const arg of expr.args) {
-        countExprOps(arg, counts);
-      }
-      return;
-    case "total_div":
-      counts.totalDiv += 1;
-      countExprOps(expr.left, counts);
-      countExprOps(expr.right, counts);
-      return;
-    case "total_mod":
-      counts.totalMod += 1;
-      countExprOps(expr.left, counts);
-      countExprOps(expr.right, counts);
-      return;
-    case "sat_add":
-      counts.satAdd += 1;
-      countExprOps(expr.left, counts);
-      countExprOps(expr.right, counts);
-      return;
-    case "sat_sub":
-      counts.satSub += 1;
-      countExprOps(expr.left, counts);
-      countExprOps(expr.right, counts);
-      return;
-    case "sat_mul":
-      counts.satMul += 1;
-      countExprOps(expr.left, counts);
-      countExprOps(expr.right, counts);
-      return;
-    case "sat_neg":
-      counts.satNeg += 1;
-      countExprOps(expr.operand, counts);
-      return;
-    case "nan_to_zero":
-      counts.nanToZero += 1;
-      countExprOps(expr.value, counts);
-      return;
-    default: {
-      const _never: never = expr;
-      return _never;
-    }
-  }
-}
-
-function isZeroLiteralExpr(expr: IRExpr): boolean {
-  return (expr.tag === "int_lit" || expr.tag === "float_lit") && expr.value === 0;
-}
-
-function buildCanonicalRangeSoundnessEdgeRecord(
-  program: IRProgram,
-  analysis: RangeAnalysisResult,
-  consumedExprIds: number[],
-  solverOptions: Z3RunOptions,
-  certificate: SemanticsCertificateRecord | null = null,
-): SemanticsEdgeRecord {
-  const edgeSolverOptions = withHardTimeout(solverOptions);
-  const consumed = new Set(consumedExprIds);
-  const seen = new Set<number>();
-  const structDefs = new Map(program.structs.map((struct) => [struct.name, struct.fields] as const));
-  const callSummaries = buildIrCallSummaries(program, structDefs, "range_call_");
-
-  const functions = [...program.functions]
-    .sort((left, right) => left.name.localeCompare(right.name))
-    .map((fn) => {
-      const fnAnalysis = analyzeIrFunction(fn, structDefs, `range_${fn.name}_`, { callSummaries });
-      const comparisonEnv = buildComparisonEnvFromParams(fn.params);
-      for (const param of fn.params) {
-        if (param.type.tag !== "array") {
-          continue;
-        }
-        for (let dim = 0; dim < param.type.dims; dim += 1) {
-          comparisonEnv.set(`jplmm_dim_${param.name}_${dim}`, {
-            lo: 1,
-            hi: INT32_MAX,
-            exact: false,
-          });
-        }
-      }
-
-      const relevantExprIds = [...fnAnalysis.exprSemantics.keys()]
-        .filter((exprId) => consumed.has(exprId))
-        .sort((left, right) => left - right);
-      for (const exprId of relevantExprIds) {
-        seen.add(exprId);
-      }
-
-      if (relevantExprIds.length === 0) {
-        return {
-          name: fn.name,
-          status: "equivalent" as const,
-          method: "range_fact_vacuous",
-          detail: "no downstream-consumed canonical range facts were used for this function",
-        };
-      }
-
-      const failures: Array<{ status: "mismatch" | "unproven"; detail: string }> = [];
-      let proved = 0;
-      for (const exprId of relevantExprIds) {
-        const exprRange = analysis.rangeMap.get(exprId);
-        const exprValue = fnAnalysis.exprSemantics.get(exprId);
-        if (!exprRange) {
-          failures.push({
-            status: "unproven",
-            detail: `consumed range fact for expr #${exprId} is missing from the canonical range map`,
-          });
-          continue;
-        }
-        if (!exprValue) {
-          failures.push({
-            status: "unproven",
-            detail: `consumed range fact for expr #${exprId} is missing symbolic semantics`,
-          });
-          continue;
-        }
-        const normalizedValue = normalizeValueForComparison(exprValue, comparisonEnv);
-        if (normalizedValue.kind !== "scalar") {
-          failures.push({
-            status: "unproven",
-            detail: `consumed range fact for expr #${exprId} has non-scalar semantics (${normalizedValue.kind})`,
-          });
-          continue;
-        }
-        const verdict = proveScalarRangeFact(fn, fnAnalysis.callSigs, normalizedValue.expr, exprRange, edgeSolverOptions);
-        if (!verdict.ok) {
-          failures.push({
-            status: verdict.status,
-            detail: `expr #${exprId}: ${verdict.detail}`,
-          });
-          continue;
-        }
-        proved += 1;
-      }
-
-      const mismatch = failures.find((entry) => entry.status === "mismatch");
-      if (mismatch) {
-        return {
-          name: fn.name,
-          status: "mismatch" as const,
-          detail: mismatch.detail,
-        };
-      }
-      if (failures.length > 0) {
-        return {
-          name: fn.name,
-          status: "unproven" as const,
-          detail: failures.map((entry) => entry.detail).join("; "),
-        };
-      }
-      return {
-        name: fn.name,
-        status: "equivalent" as const,
-        method: "range_fact_smt",
-        detail: `proved ${proved} downstream-consumed canonical range fact${proved === 1 ? "" : "s"} with shared symbolic SMT`,
-      };
-    });
-
-  const unseen = [...consumed].filter((exprId) => !seen.has(exprId)).sort((left, right) => left - right);
-  if (unseen.length > 0) {
-    functions.push({
-      name: "<globals>",
-      status: "unproven",
-      detail: `consumed canonical range facts are not yet attached to function semantics for expr ids: ${unseen.join(", ")}`,
-    });
-  }
-
-  const summary = functions.reduce(
-    (current, fn) => ({
-      equivalent: current.equivalent + (fn.status === "equivalent" ? 1 : 0),
-      mismatch: current.mismatch + (fn.status === "mismatch" ? 1 : 0),
-      unproven: current.unproven + (fn.status === "unproven" ? 1 : 0),
-    }),
-    { equivalent: 0, mismatch: 0, unproven: 0 },
-  );
-
-  return {
-    from: "canonical_ir",
-    to: "canonical_range_facts",
-    kind: "analysis_soundness",
-    certificate,
-    ok: summary.mismatch === 0 && summary.unproven === 0,
-    summary,
-    functions,
-  };
-}
-
-function proveScalarRangeFact(
-  fn: IRFunction,
-  callSigs: Map<string, { args: Array<"int" | "float">; ret: "int" | "float" }>,
-  expr: ScalarExpr,
-  range: { lo: number; hi: number },
-  solverOptions: Z3RunOptions,
-): { ok: true } | { ok: false; status: "mismatch" | "unproven"; detail: string } {
-  if (!canEncodeScalarExprWithSmt(expr)) {
-    return {
-      ok: false,
-      status: "unproven",
-      detail: "shared symbolic SMT cannot encode this range fact yet",
-    };
-  }
-
-  const smtState = createSmtEncodingState();
-  const outside = buildOutsideRangeAssertion(expr, range, smtState);
-  if (!outside) {
-    return { ok: true };
-  }
-
-  const lines = buildJplScalarPrelude();
-  for (const [name, sig] of callSigs) {
-    const domain = sig.args.map((arg) => (arg === "int" ? "Int" : "Real")).join(" ");
-    const sort = sig.ret === "int" ? "Int" : "Real";
-    lines.push(`(declare-fun ${sanitize(name)} (${domain}) ${sort})`);
-  }
-
-  const vars = new Map<string, "int" | "float">();
-  collectValueVars({ kind: "scalar", expr }, vars);
-  for (const [name, tag] of vars) {
-    lines.push(`(declare-const ${sanitize(name)} ${tag === "int" ? "Int" : "Real"})`);
-    const paramType = fn.params.find((param) => param.name === name)?.type;
-    if (paramType) {
-      appendScalarTypeConstraints(lines, name, paramType);
-      continue;
-    }
-    if (tag === "int") {
-      lines.push(`(assert (<= ${INT32_MIN} ${sanitize(name)}))`);
-      lines.push(`(assert (<= ${sanitize(name)} ${INT32_MAX}))`);
-      if (name.startsWith("jplmm_dim_")) {
-        lines.push(`(assert (<= 1 ${sanitize(name)}))`);
-      }
-    }
-  }
-
-  appendSmtEncodingState(lines, smtState);
-  lines.push(`(assert ${outside})`);
-
-  const result = checkSat(lines, solverOptions);
-  if (!result.ok) {
-    return {
-      ok: false,
-      status: "unproven",
-      detail: result.timedOut
-        ? `timed out while proving canonical range fact: ${result.error}`
-        : `could not invoke z3 for canonical range fact: ${result.error}`,
-    };
-  }
-  if (result.status === "unsat") {
-    return { ok: true };
-  }
-  if (result.status === "sat") {
-    return {
-      ok: false,
-      status: "mismatch",
-      detail: `canonical range fact is not semantically sound: z3 found a valuation outside [${renderRangeEndpoint(expr, range.lo)}, ${renderRangeEndpoint(expr, range.hi)}]`,
-    };
-  }
-  return {
-    ok: false,
-    status: "unproven",
-    detail: `z3 returned '${result.output || "unknown"}' while proving the canonical range fact`,
-  };
-}
-
-function buildOutsideRangeAssertion(
-  expr: ScalarExpr,
-  range: { lo: number; hi: number },
-  smtState: ReturnType<typeof createSmtEncodingState>,
-): string | null {
-  const term = emitScalarWithOverrides(expr, { smt: smtState });
-  const lower = Number.isFinite(range.lo)
-    ? `(< ${term} ${renderRangeEndpoint(expr, range.lo)})`
-    : null;
-  const upper = Number.isFinite(range.hi)
-    ? `(< ${renderRangeEndpoint(expr, range.hi)} ${term})`
-    : null;
-  if (lower && upper) {
-    return `(or ${lower} ${upper})`;
-  }
-  return lower ?? upper;
-}
-
-function renderRangeEndpoint(expr: ScalarExpr, value: number): string {
-  if (scalarExprType(expr) === "int") {
-    return emitScalarWithOverrides({ tag: "int_lit", value: Math.trunc(value) });
-  }
-  return emitScalarWithOverrides({ tag: "float_lit", value });
-}
-
-function serializeConsumedRangeFacts(
-  program: IRProgram,
-  analysis: RangeAnalysisResult,
-  consumedExprIds: number[],
-): Array<{
-  owner: string;
-  exprId: number;
-  rendered: string;
-  range: { lo: number; hi: number } | null;
-}> {
-  const renderings = collectProgramExprRenderings(program);
-  return [...new Set(consumedExprIds)]
-    .sort((left, right) => left - right)
-    .map((exprId) => {
-      const entry = renderings.get(exprId);
-      return {
-        owner: entry?.owner ?? "<unknown>",
-        exprId,
-        rendered: entry?.rendered ?? `<expr #${exprId}>`,
-        range: analysis.rangeMap.get(exprId) ?? null,
-      };
-    });
-}
-
 function collectExprNodes(expr: IRExpr, out: Map<number, IRExpr>): void {
   if (out.has(expr.id)) {
     return;
@@ -1239,98 +1281,6 @@ function collectExprNodes(expr: IRExpr, out: Map<number, IRExpr>): void {
       for (const arg of expr.args) {
         collectExprNodes(arg, out);
       }
-      return;
-    default: {
-      const _never: never = expr;
-      return _never;
-    }
-  }
-}
-
-function collectProgramExprRenderings(program: IRProgram): Map<number, { owner: string; rendered: string }> {
-  const out = new Map<number, { owner: string; rendered: string }>();
-  for (const global of program.globals) {
-    collectExprRenderings(global.expr, global.name, out);
-  }
-  for (const fn of program.functions) {
-    for (const stmt of fn.body) {
-      if (stmt.tag === "gas") {
-        continue;
-      }
-      collectExprRenderings(stmt.expr, fn.name, out);
-    }
-  }
-  return out;
-}
-
-function collectExprRenderings(
-  expr: IRExpr,
-  owner: string,
-  out: Map<number, { owner: string; rendered: string }>,
-): void {
-  if (!out.has(expr.id)) {
-    out.set(expr.id, { owner, rendered: renderIrExpr(expr) });
-  }
-  switch (expr.tag) {
-    case "int_lit":
-    case "float_lit":
-    case "void_lit":
-    case "var":
-    case "res":
-      return;
-    case "unop":
-      collectExprRenderings(expr.operand, owner, out);
-      return;
-    case "nan_to_zero":
-      collectExprRenderings(expr.value, owner, out);
-      return;
-    case "sat_neg":
-      collectExprRenderings(expr.operand, owner, out);
-      return;
-    case "binop":
-    case "total_div":
-    case "total_mod":
-    case "sat_add":
-    case "sat_sub":
-    case "sat_mul":
-      collectExprRenderings(expr.left, owner, out);
-      collectExprRenderings(expr.right, owner, out);
-      return;
-    case "call":
-      for (const arg of expr.args) {
-        collectExprRenderings(arg, owner, out);
-      }
-      return;
-    case "struct_cons":
-      for (const field of expr.fields) {
-        collectExprRenderings(field, owner, out);
-      }
-      return;
-    case "array_cons":
-      for (const element of expr.elements) {
-        collectExprRenderings(element, owner, out);
-      }
-      return;
-    case "rec":
-      for (const arg of expr.args) {
-        collectExprRenderings(arg, owner, out);
-      }
-      return;
-    case "index":
-      collectExprRenderings(expr.array, owner, out);
-      for (const index of expr.indices) {
-        collectExprRenderings(index, owner, out);
-      }
-      return;
-    case "field":
-      collectExprRenderings(expr.target, owner, out);
-      return;
-    case "array_expr":
-    case "sum_expr":
-      for (const binding of expr.bindings) {
-        collectExprRenderings(binding.expr, owner, out);
-      }
-      collectExprRenderings(expr.body, owner, out);
       return;
     default: {
       const _never: never = expr;

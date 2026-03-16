@@ -70,3 +70,38 @@ export type Cmd =
 export type Program = {
   commands: Cmd[];
 };
+
+export const BUILTIN_FUNCTIONS = new Set([
+  "sqrt",
+  "exp",
+  "sin",
+  "cos",
+  "tan",
+  "asin",
+  "acos",
+  "atan",
+  "log",
+  "pow",
+  "atan2",
+  "to_float",
+  "to_int",
+  "max",
+  "min",
+  "abs",
+  "clamp",
+]);
+
+export const NAN_GUARDED_BUILTINS = new Set(["sqrt", "log", "pow", "asin", "acos"]);
+
+export function unwrapTimedDefinition<TTag extends "fn_def" | "struct_def">(
+  cmd: Cmd,
+  tag: TTag,
+): Extract<Cmd, { tag: TTag }> | null {
+  if (cmd.tag === tag) {
+    return cmd as Extract<Cmd, { tag: TTag }>;
+  }
+  if (cmd.tag === "time" && cmd.cmd.tag === tag) {
+    return cmd.cmd as Extract<Cmd, { tag: TTag }>;
+  }
+  return null;
+}

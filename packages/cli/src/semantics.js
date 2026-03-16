@@ -1,15 +1,18 @@
-import { serializeExprSemantics, serializeSymValue, } from "@jplmm/proof";
+import { checkCompilerSemanticsRecord, serializeExprSemantics, serializeSymValue, } from "@jplmm/proof";
 import { analyzeProgramMetrics } from "@jplmm/verify";
 export { buildCompilerSemantics } from "@jplmm/proof";
-export function buildSemanticsDebugData(frontend, verification, backend = null, compiler = null) {
+export const SEMANTICS_DEBUG_SCHEMA_VERSION = 1;
+export function buildSemanticsDebugData(frontend, verification, backend = null, compiler = null, source = null) {
     const metrics = analyzeProgramMetrics(frontend.program);
     return {
         kind: "jplmm_semantics_debug",
+        schemaVersion: SEMANTICS_DEBUG_SCHEMA_VERSION,
         diagnostics: {
             frontend: frontend.diagnostics,
             verification: verification.diagnostics,
         },
         refinements: frontend.refinements.map(serializeRefinement),
+        source,
         canonicalProgram: verification.canonicalProgram ?? null,
         compiler,
         backend,
@@ -27,6 +30,41 @@ export function buildSemanticsDebugData(frontend, verification, backend = null, 
 }
 export function renderSemanticsDebugData(data) {
     return `${JSON.stringify(data, null, 2)}\n`;
+}
+export function checkSemanticsDebugDataBundle(serialized, solverOptions = {}) {
+    let parsed;
+    try {
+        parsed = JSON.parse(serialized);
+    }
+    catch (error) {
+        return {
+            ok: false,
+            compiler: null,
+            message: `invalid semantics JSON: ${error instanceof Error ? error.message : String(error)}`,
+        };
+    }
+    if (!isSemanticsDebugData(parsed) || !parsed.compiler) {
+        return {
+            ok: false,
+            compiler: null,
+            message: "semantics bundle does not contain a compiler ladder record",
+        };
+    }
+    if (parsed.schemaVersion !== SEMANTICS_DEBUG_SCHEMA_VERSION) {
+        return {
+            ok: false,
+            compiler: null,
+            message: `unsupported semantics bundle schema version ${String(parsed.schemaVersion)}`,
+        };
+    }
+    const compiler = checkCompilerSemanticsRecord(parsed.compiler, solverOptions);
+    return {
+        ok: compiler.ok,
+        compiler,
+        message: compiler.ok
+            ? "compiler ladder revalidated successfully"
+            : "compiler ladder revalidation found mismatches or unproven edges",
+    };
 }
 function serializeRefinement(refinement) {
     const { baselineSemantics: _baselineSemantics, refSemantics: _refSemantics, baselineSemanticsData, refSemanticsData, ...rest } = refinement;
@@ -81,5 +119,11 @@ function serializeVerificationAnalysis(trace) {
             },
         ])),
     };
+}
+function isSemanticsDebugData(value) {
+    return typeof value === "object"
+        && value !== null
+        && value.kind === "jplmm_semantics_debug"
+        && typeof value.schemaVersion === "number";
 }
 //# sourceMappingURL=semantics.js.map

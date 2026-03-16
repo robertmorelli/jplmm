@@ -25,7 +25,7 @@ import type {
 
 export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {}): OptimizeResult {
   const reports: OptimizePassReport[] = [];
-  const proofGate = options.proofGateCertificates === true;
+  const proofGate = options.proofGateCertificates !== false;
   const canonicalCandidate = canonicalizeProgram(program);
   let canonical = canonicalCandidate;
   const canonicalCertificate: OptimizeCertificates["canonicalize"] = {
@@ -350,6 +350,7 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
         stats: canonical.stats,
       },
       rangeAnalysis: {
+        exprIds: [...canonicalRangeResult.rangeMap.keys()].sort((left, right) => left - right),
         consumedExprIds: [...guardResult.usedRangeExprIds],
       },
       guardElimination: guardCertificate,
@@ -376,9 +377,9 @@ export function optimizeProgram(program: IRProgram, options: OptimizeOptions = {
       },
     },
     provenance: {
-      rawToCanonical: buildExprProvenance(program, canonical.program),
-      canonicalToGuardElided: buildExprProvenance(canonical.program, guardResult.program),
-      guardElidedToFinalOptimized: buildExprProvenance(guardResult.program, current),
+      rawToCanonical: buildExprProvenance(program, canonical.program, "canonicalize"),
+      canonicalToGuardElided: buildExprProvenance(canonical.program, guardResult.program, "guard_elimination"),
+      guardElidedToFinalOptimized: buildExprProvenance(guardResult.program, current, "identity"),
     },
   };
 }

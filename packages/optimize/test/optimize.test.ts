@@ -292,4 +292,17 @@ describe("@jplmm/optimize", () => {
     expect(result.reports.find((report) => report.name === "closed_form")?.details).toContain("proof_gate=accepted");
     expect(result.reports.find((report) => report.name === "lut_tabulation")?.details).toContain("proof_gate=accepted");
   });
+
+  it("records rule-level provenance for rewritten IR nodes", () => {
+    const program = compile(`
+      fn safe_div(x:int): int {
+        ret (x / 1) + 1;
+      }
+    `);
+    const result = optimizeProgram(program);
+    const entries = [...result.provenance.rawToCanonical.byOutputExprId.values()];
+
+    expect(entries.some((entry) => entry.rule === "canonicalize_total_div")).toBe(true);
+    expect(entries.every((entry) => Object.prototype.hasOwnProperty.call(entry, "rule"))).toBe(true);
+  });
 });

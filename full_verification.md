@@ -59,9 +59,10 @@ Today those are:
 
 Current machine-readable ladder status:
 
+- `typed_source_ast`
 - `raw_ir`
 - `canonical_ir`
-- `canonical_range_facts` for the canonical facts guard elimination actually consumes
+- `canonical_range_facts` for the full canonical range map
 - `guard_elided_ir`
 - `final_optimized_ir`
 - `closed_form_impl_ir` when a verified closed-form implementation is selected
@@ -76,6 +77,7 @@ per-expression semantic records:
 
 Current verified edges in semantics mode:
 
+- `typed_source_ast -> raw_ir`
 - `raw_ir -> canonical_ir`
 - `canonical_ir -> canonical_range_facts`
 - `canonical_ir -> guard_elided_ir`
@@ -86,6 +88,7 @@ Current verified edges in semantics mode:
 Each of those edges should carry a pass-local certificate record that can be
 checked independently of the pass report:
 
+- AST lowering: a certificate that rebuilding raw IR from the typed AST reproduces the stored raw floor
 - canonicalization: pass order plus rewrite stats, together with a validator that rechecks the derived operator-count deltas and resulting canonical form
 - range analysis consumption: the exact consumed expr ids and a validator that they are attached to canonical IR expressions
 - guard elimination: consumed fact ids plus removed guard counts, together with a validator against the structural diff
@@ -95,16 +98,21 @@ checked independently of the pass report:
 
 Current architecture update:
 
-- compiler-floor schemas and edge validators are now shared proof-side code in [packages/proof/src/compiler_ladder.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder.ts), not reconstructed only in the CLI
+- compiler-floor schemas and edge validators are now shared proof-side code in [packages/proof/src/compiler_ladder.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder.ts) plus helper modules such as [packages/proof/src/compiler_ladder_certificates.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder_certificates.ts) and [packages/proof/src/compiler_ladder_ranges.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/proof/src/compiler_ladder_ranges.ts), not reconstructed only in the CLI
 - the optimizer now exposes independent local certificate validators in [packages/optimize/src/certificates.ts](/Users/robertmorelli/Documents/personal-repos/jplmm/packages/optimize/src/certificates.ts)
-- the optimize pipeline has an opt-in proof-gated mode (`proofGateCertificates`) that can preserve the previous floor when a locally checkable certificate fails
-- optimize results also now carry expr-level provenance maps between adjacent IR floors, and semantics mode serializes those ancestry maps
+- the optimize pipeline now proof-gates non-research passes by default and can preserve the previous floor when a locally checkable certificate fails
+- optimize results now carry structured expr provenance maps between adjacent IR floors, recording source expr ids plus whether a lower-floor node was preserved, rewritten, or generated, along with a coarse rule label such as `canonicalize_total_div` or `guard_preserve`
+- there is now a standalone semantics-bundle rechecker path, so a dumped ladder can be validated without recompiling source
+- semantics bundles now carry explicit schema versions, so external checkers can reject incompatible dumps instead of guessing
+- the semantics debug bundle now also records source-level top-level execution traces for commands such as `print`, `show`, `read image`, `write image`, `time`, and implicit `main()`
 
 Important current scope note:
 
-- `canonical_range_facts` is the guard-consumed subset of the canonical range map, not the full range analysis output
-- the semantics dump records the consumed expr ids together with owner function, rendered canonical expression, and interval
-- the edge proves those consumed facts are sound enough to justify guard elimination
+- `canonical_range_facts` now rechecks the full canonical range map, not only the guard-consumed subset
+- the semantics dump records both:
+  - the full canonical range-fact set
+  - the guard-consumed subset used by guard elimination
+- the range-analysis certificate still records the consumed subset explicitly because guard elimination depends on it locally
 
 The initial full-verification target should cover the non-research path:
 

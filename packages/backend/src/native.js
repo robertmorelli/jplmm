@@ -1,9 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getArrayExtentNames, getScalarBounds } from "@jplmm/ast";
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
+import { INT32_MAX, INT32_MIN, getArrayExtentNames, getScalarBounds } from "@jplmm/ast";
 function createNativeModuleContext(program) {
     const structs = new Map(program.structs.map((struct) => [struct.name, struct]));
     const functionSymbols = new Map();
@@ -675,7 +673,7 @@ function normalizeScalarExprForType(expr, type) {
         return expr;
     }
     if (type.tag === "float") {
-        let out = `jplmm_nan_to_zero_f32(${expr})`;
+        const out = `jplmm_nan_to_zero_f32(${expr})`;
         const bounds = getScalarBounds(type);
         if (!bounds) {
             return out;

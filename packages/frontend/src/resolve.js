@@ -1,26 +1,5 @@
-import { getArrayExtentNames, getScalarBounds, scalarTag } from "@jplmm/ast";
-import { error, warning } from "./errors";
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
-const BUILTIN_FUNCTIONS = new Set([
-    "sqrt",
-    "exp",
-    "sin",
-    "cos",
-    "tan",
-    "asin",
-    "acos",
-    "atan",
-    "log",
-    "pow",
-    "atan2",
-    "to_float",
-    "to_int",
-    "max",
-    "min",
-    "abs",
-    "clamp",
-]);
+import { BUILTIN_FUNCTIONS, INT32_MAX, INT32_MIN, getArrayExtentNames, getScalarBounds, scalarTag, unwrapTimedDefinition, } from "@jplmm/ast";
+import { nodeError, nodeWarning } from "./errors";
 export function resolveProgram(program) {
     const diagnostics = [];
     const definedFns = new Set();
@@ -561,20 +540,5 @@ function markLValueUsage(lvalue, scope, letBindings, usedBindings) {
             return _never;
         }
     }
-}
-function nodeError(node, message, code) {
-    return error(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
-}
-function nodeWarning(node, message, code) {
-    return warning(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
-}
-function unwrapTimedDefinition(cmd, tag) {
-    if (cmd.tag === tag) {
-        return cmd;
-    }
-    if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-        return cmd.cmd;
-    }
-    return null;
 }
 //# sourceMappingURL=resolve.js.map

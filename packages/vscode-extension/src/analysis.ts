@@ -1,3 +1,4 @@
+import { BUILTIN_FUNCTIONS } from "@jplmm/ast";
 import { ACTIVE_KEYWORDS } from "@jplmm/grammar";
 
 export type TokenKind =
@@ -63,25 +64,6 @@ export type CompletionEntry = {
 
 const KEYWORDS = new Set(ACTIVE_KEYWORDS);
 const SYMBOLS = new Set(["(", ")", "{", "}", "[", "]", ",", ":", ";", "=", "+", "-", "*", "/", "%", "."]);
-const BUILTIN_FUNCTIONS = [
-  "sqrt",
-  "exp",
-  "sin",
-  "cos",
-  "tan",
-  "asin",
-  "acos",
-  "atan",
-  "log",
-  "pow",
-  "atan2",
-  "to_float",
-  "to_int",
-  "max",
-  "min",
-  "abs",
-  "clamp",
-] as const;
 const PRIMITIVE_TYPES = ["int", "float", "void"] as const;
 const CONTEXTUAL_KEYWORDS = ["out"] as const;
 

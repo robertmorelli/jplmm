@@ -1,35 +1,27 @@
-import type { Argument, Binding, Cmd, Expr, LValue, Program, Stmt, Type } from "@jplmm/ast";
-import { getArrayExtentNames, getScalarBounds, scalarTag } from "@jplmm/ast";
+import {
+  BUILTIN_FUNCTIONS,
+  INT32_MAX,
+  INT32_MIN,
+  getArrayExtentNames,
+  getScalarBounds,
+  scalarTag,
+  unwrapTimedDefinition,
+  type Argument,
+  type Binding,
+  type Cmd,
+  type Expr,
+  type LValue,
+  type Program,
+  type Stmt,
+  type Type,
+} from "@jplmm/ast";
 
-import { error, type Diagnostic, warning } from "./errors";
+import { nodeError, nodeWarning, type Diagnostic } from "./errors";
 
 type ResolveResult = {
   program: Program;
   diagnostics: Diagnostic[];
 };
-
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
-
-const BUILTIN_FUNCTIONS = new Set([
-  "sqrt",
-  "exp",
-  "sin",
-  "cos",
-  "tan",
-  "asin",
-  "acos",
-  "atan",
-  "log",
-  "pow",
-  "atan2",
-  "to_float",
-  "to_int",
-  "max",
-  "min",
-  "abs",
-  "clamp",
-]);
 
 type FnContext = {
   fnName: string;
@@ -726,33 +718,4 @@ function markLValueUsage(
       return _never;
     }
   }
-}
-
-function nodeError(
-  node: { start?: number; end?: number } | null | undefined,
-  message: string,
-  code?: string,
-): Diagnostic {
-  return error(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
-}
-
-function nodeWarning(
-  node: { start?: number; end?: number } | null | undefined,
-  message: string,
-  code?: string,
-): Diagnostic {
-  return warning(message, node?.start ?? 0, node?.end ?? node?.start ?? 0, code);
-}
-
-function unwrapTimedDefinition<T extends "fn_def" | "struct_def">(
-  cmd: Cmd,
-  tag: T,
-): Extract<Cmd, { tag: T }> | null {
-  if (cmd.tag === tag) {
-    return cmd as Extract<Cmd, { tag: T }>;
-  }
-  if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-    return cmd.cmd as Extract<Cmd, { tag: T }>;
-  }
-  return null;
 }

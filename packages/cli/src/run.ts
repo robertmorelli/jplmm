@@ -2,37 +2,33 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import type { Argument, Cmd, Expr, LValue, Program, Type } from "@jplmm/ast";
+import { BUILTIN_FUNCTIONS, INT32_MAX, INT32_MIN, renderType, unwrapTimedDefinition, type Argument, type Cmd, type Expr, type LValue, type Program, type Type } from "@jplmm/ast";
 import { buildIR } from "@jplmm/ir";
 import { executeProgram, optimizeProgram, type OptimizeArtifacts, type RuntimeArrayValue, type RuntimeStructValue, type RuntimeValue } from "@jplmm/optimize";
 
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
 const INT_T: Type = { tag: "int" };
 const FLOAT_T: Type = { tag: "float" };
 const VOID_T: Type = { tag: "void" };
-const BUILTINS = new Set([
-  "sqrt",
-  "exp",
-  "sin",
-  "cos",
-  "tan",
-  "asin",
-  "acos",
-  "atan",
-  "log",
-  "pow",
-  "atan2",
-  "to_float",
-  "to_int",
-  "max",
-  "min",
-  "abs",
-  "clamp",
-]);
 
 export type ExecutionReport = {
   output: string[];
+  wroteFiles: string[];
+};
+
+export type TopLevelCommandTrace = {
+  id: number;
+  tag: Cmd["tag"] | "implicit_main";
+  rendered: string;
+  effect: string;
+  outputDelta: string[];
+  wroteFilesDelta: string[];
+};
+
+export type TopLevelExecutionTrace = {
+  usedImplicitMain: boolean;
+  implicitMainName: string | null;
+  commands: TopLevelCommandTrace[];
+  finalOutput: string[];
   wroteFiles: string[];
 };
 
@@ -87,6 +83,71 @@ export function executeTopLevelProgram(
   };
 }
 
+export function traceTopLevelProgram(
+  program: Program,
+  typeMap: Map<number, Type>,
+  cwd: string,
+): TopLevelExecutionTrace {
+  const ir = buildIR(program, typeMap);
+  const optimized = optimizeProgram(ir);
+  const ctx: ExecutorContext = {
+    program,
+    typeMap,
+    globals: new Map(),
+    cwd,
+    irProgram: optimized.program,
+    artifacts: optimized.artifacts,
+    output: [],
+    wroteFiles: [],
+  };
+
+  const commands: TopLevelCommandTrace[] = [];
+  const mainFn = findImplicitMain(program);
+  if (mainFn && !hasExplicitTopLevelExecution(program)) {
+    const value = executeProgram(ctx.irProgram, mainFn.name, [], { artifacts: ctx.artifacts }).value;
+    if (mainFn.retType.tag !== "void") {
+      ctx.output.push(formatValue(value));
+    }
+    commands.push({
+      id: mainFn.id,
+      tag: "implicit_main",
+      rendered: `${mainFn.name}()`,
+      effect: "executes the implicit zero-argument main entrypoint and emits its return value if non-void",
+      outputDelta: [...ctx.output],
+      wroteFilesDelta: [],
+    });
+    return {
+      usedImplicitMain: true,
+      implicitMainName: mainFn.name,
+      commands,
+      finalOutput: [...ctx.output],
+      wroteFiles: [...ctx.wroteFiles],
+    };
+  }
+
+  for (const cmd of program.commands) {
+    const outputBefore = ctx.output.length;
+    const wroteBefore = ctx.wroteFiles.length;
+    executeCmd(cmd, ctx);
+    commands.push({
+      id: cmd.id,
+      tag: cmd.tag,
+      rendered: renderCmd(cmd),
+      effect: describeCmdEffect(cmd),
+      outputDelta: ctx.output.slice(outputBefore),
+      wroteFilesDelta: ctx.wroteFiles.slice(wroteBefore),
+    });
+  }
+
+  return {
+    usedImplicitMain: false,
+    implicitMainName: null,
+    commands,
+    finalOutput: [...ctx.output],
+    wroteFiles: [...ctx.wroteFiles],
+  };
+}
+
 function findImplicitMain(program: Program): Extract<Cmd, { tag: "fn_def" }> | null {
   for (const cmd of program.commands) {
     const fn = unwrapTimedDefinition(cmd, "fn_def");
@@ -109,18 +170,122 @@ function hasExplicitTopLevelExecution(program: Program): boolean {
   });
 }
 
-function unwrapTimedDefinition<T extends "fn_def" | "struct_def">(
-  cmd: Cmd,
-  tag: T,
-): Extract<Cmd, { tag: T }> | null {
-  if (cmd.tag === tag) {
-    return cmd as Extract<Cmd, { tag: T }>;
+function renderCmd(cmd: Cmd): string {
+  switch (cmd.tag) {
+    case "fn_def":
+      return `${cmd.keyword} ${cmd.name}(${cmd.params.map((param) => `${param.name}:${renderType(param.type)}`).join(", ")}): ${renderType(cmd.retType)}`;
+    case "let_cmd":
+      return `let ${renderLValue(cmd.lvalue)} = ${renderExpr(cmd.expr)}`;
+    case "struct_def":
+      return `struct ${cmd.name}`;
+    case "read_image":
+      return `read image "${cmd.filename}" as ${renderArgument(cmd.target)}`;
+    case "write_image":
+      return `write image ${renderExpr(cmd.expr)} -> "${cmd.filename}"`;
+    case "print":
+      return `print "${cmd.message}"`;
+    case "show":
+      return `show ${renderExpr(cmd.expr)}`;
+    case "time":
+      return `time ${renderCmd(cmd.cmd)}`;
+    default: {
+      const _never: never = cmd;
+      return `${_never}`;
+    }
   }
-  if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-    return cmd.cmd as Extract<Cmd, { tag: T }>;
-  }
-  return null;
 }
+
+function describeCmdEffect(cmd: Cmd): string {
+  switch (cmd.tag) {
+    case "fn_def":
+      return "declares a callable function for later execution";
+    case "struct_def":
+      return "declares a struct shape for later construction and field projection";
+    case "let_cmd":
+      return "evaluates the expression once and binds the resulting runtime value at top level";
+    case "read_image":
+      return "loads an image file and binds the resulting dimensions and/or array value";
+    case "write_image":
+      return "evaluates the expression and writes an image file";
+    case "print":
+      return "emits the literal message to top-level output";
+    case "show":
+      return "evaluates the expression and emits its formatted runtime value";
+    case "time":
+      return "executes the nested command and appends an elapsed-time line";
+    default: {
+      const _never: never = cmd;
+      return `${_never}`;
+    }
+  }
+}
+
+function renderLValue(lvalue: LValue): string {
+  switch (lvalue.tag) {
+    case "var":
+      return lvalue.name;
+    case "field":
+      return `${lvalue.base}.${lvalue.field}`;
+    case "tuple":
+      return `(${lvalue.items.map((item) => renderLValue(item)).join(", ")})`;
+    default: {
+      const _never: never = lvalue;
+      return `${_never}`;
+    }
+  }
+}
+
+function renderArgument(argument: Argument): string {
+  switch (argument.tag) {
+    case "var":
+      return argument.name;
+    case "tuple":
+      return `(${argument.items.map((item) => renderArgument(item)).join(", ")})`;
+    default: {
+      const _never: never = argument;
+      return `${_never}`;
+    }
+  }
+}
+
+function renderExpr(expr: Expr): string {
+  switch (expr.tag) {
+    case "int_lit":
+    case "float_lit":
+      return `${expr.value}`;
+    case "void_lit":
+      return "void";
+    case "var":
+      return expr.name;
+    case "binop":
+      return `${renderExpr(expr.left)} ${expr.op} ${renderExpr(expr.right)}`;
+    case "unop":
+      return `${expr.op}${renderExpr(expr.operand)}`;
+    case "call":
+      return `${expr.name}(${expr.args.map((arg) => renderExpr(arg)).join(", ")})`;
+    case "index":
+      return `${renderExpr(expr.array)}[${expr.indices.map((idx) => renderExpr(idx)).join(", ")}]`;
+    case "field":
+      return `${renderExpr(expr.target)}.${expr.field}`;
+    case "struct_cons":
+      return `${expr.name}(${expr.fields.map((field) => renderExpr(field)).join(", ")})`;
+    case "array_cons":
+      return `[${expr.elements.map((element) => renderExpr(element)).join(", ")}]`;
+    case "array_expr":
+      return `array[${expr.bindings.map((binding) => `${binding.name}:${renderExpr(binding.expr)}`).join(", ")}] ${renderExpr(expr.body)}`;
+    case "sum_expr":
+      return `sum[${expr.bindings.map((binding) => `${binding.name}:${renderExpr(binding.expr)}`).join(", ")}] ${renderExpr(expr.body)}`;
+    case "res":
+      return "res";
+    case "rec":
+      return `rec(${expr.args.map((arg) => renderExpr(arg)).join(", ")})`;
+    default: {
+      const _never: never = expr;
+      return `${_never}`;
+    }
+  }
+}
+
 
 function executeCmd(cmd: Cmd, ctx: ExecutorContext): void {
   switch (cmd.tag) {
@@ -519,7 +684,7 @@ function evalBuiltin(name: string, args: RuntimeValue[], resultType: Type): Runt
 }
 
 function isBuiltin(name: string): boolean {
-  return BUILTINS.has(name);
+  return BUILTIN_FUNCTIONS.has(name);
 }
 
 function normalizeByType(value: RuntimeValue, type: Type): RuntimeValue {

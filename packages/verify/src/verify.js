@@ -1,3 +1,4 @@
+import { unwrapTimedDefinition } from "@jplmm/ast";
 import { typecheckProgram } from "@jplmm/frontend";
 import { analyzeIrFunction, analyzeIrProofSites, buildIrCallSummaries, buildCanonicalProgram, hasRec, } from "@jplmm/proof";
 const DEFAULT_PROOF_TIMEOUT_MS = 2000;
@@ -115,15 +116,6 @@ function verifyFunction(fnName, fn, trace, diagnostics, solverOptions) {
         method: methods.some((method) => method === "smt") ? "smt" : "structural",
         details: details.join("; "),
     };
-}
-function unwrapTimedDefinition(cmd, tag) {
-    if (cmd.tag === tag) {
-        return cmd;
-    }
-    if (cmd.tag === "time" && cmd.cmd.tag === tag) {
-        return cmd.cmd;
-    }
-    return null;
 }
 function resolveProofTimeoutMs(proofTimeoutMs) {
     if (proofTimeoutMs === undefined) {

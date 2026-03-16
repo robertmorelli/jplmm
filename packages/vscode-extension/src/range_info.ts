@@ -1,10 +1,8 @@
-import { getScalarBounds, type Cmd, type Expr, type Program, type Stmt, type Type } from "@jplmm/ast";
+import { INT32_MAX, INT32_MIN, getScalarBounds, type Cmd, type Expr, type Program, type Stmt, type Type } from "@jplmm/ast";
 import type { FrontendResult } from "@jplmm/frontend";
 import { buildIR } from "@jplmm/ir";
 import { analyzeRanges, type Interval } from "@jplmm/optimize";
 
-const INT32_MIN = -2147483648;
-const INT32_MAX = 2147483647;
 
 export type VariableRangeEntry = {
   name: string;
